@@ -1,0 +1,9 @@
+# Exact set actually imported by voicera_bridge.py / ari_client.py /
+# rtp_server.py / logging_config.py at module load time. numpy is
+# deliberately NOT listed here: audio/resampler.py is only imported lazily
+# by rtp_server.py's resample path, which the bridge's current 8kHz-mu-law-
+# only configuration never triggers. Add numpy if you change that.
+websockets==16.1.1
+aiohttp==3.14.3
+structlog==26.1.0
+tenacity==8.2.3

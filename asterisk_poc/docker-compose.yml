@@ -1,0 +1,52 @@
+version: '3.8'
+
+# Asterisk PoC stack: Asterisk itself + the Voicera bridge (../asterisk_bridge),
+# on a shared Docker network so Asterisk's externalMedia RTP can reach the
+# bridge container directly (no host networking needed on Docker Desktop).
+#
+# Joins Voicera's own `voicera_network` (external, brought up by the main
+# docker-compose.yml) so the bridge reaches voice_server directly by
+# container name — no host.docker.internal hop needed now that everything
+# lives in one repo.
+#
+# Bring up Voicera's own stack first, then from the repo root:
+#   docker compose -f asterisk_poc/docker-compose.yml up -d --build
+
+services:
+  asterisk:
+    image: andrius/asterisk:latest
+    container_name: voicera_poc_asterisk
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"   # SIP signaling, for a softphone to register
+      - "8088:8088/tcp"   # ARI/HTTP, useful for debugging from the host
+      - "10000-10020:10000-10020/udp"  # Asterisk<->softphone RTP (see conf/rtp.conf)
+    volumes:
+      - ./conf/ari.conf:/etc/asterisk/ari.conf:ro
+      - ./conf/http.conf:/etc/asterisk/http.conf:ro
+      - ./conf/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./conf/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./conf/rtp.conf:/etc/asterisk/rtp.conf:ro
+    networks:
+      - voicera_poc_net
+      - voicera_network
+
+  bridge:
+    build:
+      context: ../asterisk_bridge
+      dockerfile: Dockerfile
+    container_name: voicera_poc_bridge
+    restart: unless-stopped
+    env_file:
+      - ./bridge.env
+    depends_on:
+      - asterisk
+    networks:
+      - voicera_poc_net
+      - voicera_network
+
+networks:
+  voicera_poc_net:
+    name: voicera_poc_net
+  voicera_network:
+    external: true

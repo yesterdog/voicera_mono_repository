@@ -155,6 +155,7 @@ volumes:
 
 networks:
   voicera_network:
+    name: voicera_network
     driver: bridge
 
 secrets:
