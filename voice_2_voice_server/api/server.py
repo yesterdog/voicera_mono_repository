@@ -461,6 +461,65 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
         logger.info(f"🔌 WebSocket closed: call_sid={call_sid}")
 
 
+@app.websocket("/asterisk/agent/{agent_id}")
+async def asterisk_websocket_endpoint(websocket: WebSocket, agent_id: str):
+    """WebSocket endpoint for Asterisk audio streaming (via asterisk_bridge).
+
+    Speaks the same start/media/playAudio JSON protocol as the Vobiz endpoint
+    above; the bridge translates that to/from Asterisk ARI external media RTP.
+
+    Args:
+        websocket: WebSocket connection
+        agent_id: Agent ID to use
+    """
+    await websocket.accept()
+    logger.info(f"🔌 Asterisk WebSocket connected: agent={agent_id}")
+
+    call_sid = None
+    stream_sid = None
+
+    try:
+        agent_config = await fetch_agent_config_from_backend(agent_id)
+        agent_type = agent_config.get("agent_type")
+
+        logger.info(f"📥 Agent config: {agent_config}")
+        if not agent_config:
+            logger.error(f"❌ Failed to fetch agent config from backend: {agent_id}")
+            return
+
+        first_message = await websocket.receive_text()
+        data = json.loads(first_message)
+
+        if data.get("event") != "start":
+            logger.warning(f"⚠️ Expected 'start' event, got: {data.get('event')}")
+            return
+
+        start_info = data.get("start", {})
+        call_sid = start_info.get("callSid") or start_info.get("callId", "unknown")
+        stream_sid = start_info.get("streamSid") or start_info.get("streamId", "unknown")
+
+        logger.info(f"📞 Asterisk call started: call_sid={call_sid}, stream_sid={stream_sid}")
+        logger.debug(f"📋 Start info: {start_info}")
+
+        await bot(
+            websocket,
+            stream_sid,
+            call_sid,
+            agent_type,
+            agent_config,
+            provider="asterisk",
+        )
+
+    except FileNotFoundError as e:
+        logger.error(f"❌ {e}")
+        await websocket.close(code=1008, reason="Agent config not found")
+    except Exception as e:
+        logger.error(f"❌ Asterisk WebSocket error: {e}")
+        logger.debug(traceback.format_exc())
+    finally:
+        logger.info(f"🔌 Asterisk WebSocket closed: call_sid={call_sid}")
+
+
 @app.api_route("/plivo/answer", methods=["GET", "POST"])
 async def plivo_answer_webhook(request: Request):
     """Plivo answer webhook - returns XML with WebSocket URL."""
