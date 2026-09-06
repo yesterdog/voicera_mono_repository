@@ -27,6 +27,7 @@ from pipecat.transports.websocket.fastapi import (
 from pipecat.runner.utils import parse_telephony_websocket
 from storage.minio_client import MinIOStorage
 from serializer.vobiz_serializer import VobizFrameSerializer
+from serializer.jambonz_serializer import JambonzFrameSerializer
 from .services import (
     create_llm_service,
     create_stt_service,
@@ -437,6 +438,16 @@ async def bot(
                 vobiz_sample_rate=sample_rate,
                 sample_rate=sample_rate,
                 auto_hang_up=False,
+            ),
+        )
+    elif normalized_provider == "jambonz":
+        stream_sid = stream_sid or "unknown"
+        call_sid = call_sid or "unknown"
+        serializer = JambonzFrameSerializer(
+            call_sid=call_sid,
+            params=JambonzFrameSerializer.InputParams(
+                jambonz_sample_rate=sample_rate,
+                sample_rate=sample_rate,
             ),
         )
     else:

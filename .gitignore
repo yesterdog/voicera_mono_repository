@@ -12,6 +12,14 @@ backups/mongodb/*.json
 
 # Frontend local env (compose secret); may be empty placeholder
 voicera_frontend/.env.local
+
+# Root-level compose secrets (e.g. INTERNAL_API_KEY, read by docker compose's
+# automatic .env loading)
+/.env
+
+# Jambonz self-hosted stack secrets (local dev/PoC only)
+.env.jambonz
+jambonz/drachtio.conf.xml
 ai4bharat_tts_server/compare_marathi_tts_metrics.py
 ai4bharat_tts_server/server_grpc.py
 ai4bharat_tts_server/tts_pb2_grpc.py

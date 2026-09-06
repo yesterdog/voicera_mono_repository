@@ -1,0 +1,340 @@
+# Self-hosted jambonz PoC stack (Workstream B).
+#
+# Kept separate from docker-compose.yml, same convention as the optional
+# ai4bharat_* services: not part of `make start-all-services`, brought up
+# explicitly with `docker compose -f docker-compose.jambonz.yml --env-file .env.jambonz up -d`.
+#
+# Joins the existing voicera_network so feature-server can reach
+# voice_server directly (http://voice_server:7860/jambonz/answer) without
+# needing ngrok for local testing.
+#
+# Local dev/PoC only. Secrets live in .env.jambonz (gitignored).
+
+networks:
+  voicera_network:
+    external: true
+    name: voicera_mono_repository_voicera_network
+
+services:
+  # === Infra ===
+  jambonz_mysql:
+    image: mysql:8.0
+    container_name: jambonz_mysql
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: jambones
+      MYSQL_USER: jambones
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - jambonz_mysql_data:/var/lib/mysql
+    networks:
+      - voicera_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  jambonz_redis:
+    image: redis:7-alpine
+    container_name: jambonz_redis
+    restart: unless-stopped
+    networks:
+      - voicera_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  jambonz_influxdb:
+    image: influxdb:1.8
+    container_name: jambonz_influxdb
+    restart: unless-stopped
+    environment:
+      INFLUXDB_DB: jambonz_stats
+      INFLUXDB_HTTP_AUTH_ENABLED: "false"
+    volumes:
+      - jambonz_influxdb_data:/var/lib/influxdb
+    networks:
+      - voicera_network
+
+  # === SIP / media core ===
+  jambonz_drachtio:
+    # NOTE: jambonz/drachtio-server:latest embeds a runtime license check
+    # ("Server starting without valid license - all incoming requests will
+    # be rejected") that isn't documented anywhere and has no free/PoC path.
+    # Using the plain upstream drachtio-server image instead - same SIP
+    # proxy, no jambonz licensing wrapper.
+    image: drachtio/drachtio-server:latest
+    container_name: jambonz_drachtio
+    restart: unless-stopped
+    # Listens on both 5062 (original choice, avoiding the old asterisk PoC's
+    # port 5060) and 5060 (now free - asterisk PoC has been shut down), so
+    # softphones defaulting to either port reach jambonz without reconfiguring.
+    # Config file (not just CLI flags) is needed for <request-handlers/>,
+    # which routes INVITE through sbc-call-router - see jambonz/drachtio.conf.xml.
+    command: drachtio -f /etc/drachtio.conf.xml
+    volumes:
+      - ./jambonz/drachtio.conf.xml:/etc/drachtio.conf.xml:ro
+    ports:
+      - "5062:5062/udp"
+      - "5062:5062/tcp"
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+    networks:
+      - voicera_network
+
+  # Private drachtio, dedicated to feature-server only (no <request-handlers/>,
+  # no other apps connected). jambonz's real architecture pairs each
+  # feature-server with its own internal drachtio, separate from the public
+  # one sbc-inbound/sbc-sip-sidecar use - sbc-inbound's B2BUA leg toward
+  # feature-server needs somewhere to proxy to that doesn't get re-classified
+  # by sbc-call-router's internal-vs-external CIDR check (which would route
+  # any second hop off the *public* drachtio to the 'sbc-outbound' tag - an
+  # app that's for carrier/PSTN-bound calls only and would reject this call).
+  jambonz_drachtio_fs:
+    image: drachtio/drachtio-server:latest
+    container_name: jambonz_drachtio_fs
+    restart: unless-stopped
+    command: drachtio --contact "sip:*:5063;transport=udp,tcp" --secret "${DRACHTIO_SECRET}" --loglevel info
+    networks:
+      - voicera_network
+
+  jambonz_rtpengine:
+    image: jambonz/rtpengine:latest
+    container_name: jambonz_rtpengine
+    restart: unless-stopped
+    # Image's default 'rtpengine' user can't write /rec (recording spool)
+    # inside the container's root filesystem; run as root to avoid that.
+    user: root
+    # RTPENGINE_PORT_MIN/MAX env vars are NOT read by this image's
+    # entrypoint (it only templates the interface= line into a static
+    # rtpengine.conf that hardcodes port-min=40000/port-max=60000) - actual
+    # port range has to be a CLI override, which the entrypoint passes
+    # through to rtpengine as extra args after the leading "rtpengine".
+    # Range must match the published port range below.
+    command: rtpengine --port-min=40000 --port-max=40100
+    environment:
+      RTPENGINE_BIND_NG_PORT: "22222"
+      # Without these, rtpengine's entrypoint (no $CLOUD set locally) falls
+      # back to advertising its own container IP in SDP - unreachable from
+      # Linphone on the Mac host, so every call is one-way silence (this
+      # exact failure mode, and fix, is documented in the image's own
+      # entrypoint.sh comments). Both endpoints are on this same host, so
+      # advertising 127.0.0.1 (which Docker Desktop forwards to the
+      # published 40000-40020 range) is the correct "public" address here.
+      # NOTE: LOCAL_IP is this container's own docker-network IP; if it's
+      # recreated and gets a different IP, update this to match.
+      LOCAL_IP: "172.20.0.12"
+      PUBLIC_IP: "127.0.0.1"
+    ports:
+      - "40000-40100:40000-40100/udp"
+    networks:
+      - voicera_network
+
+  jambonz_freeswitch:
+    # v1.10.1-full bundles a mod_audio_fork.so dated 2020-08-31, which predates
+    # jambonz's bidirectional-audio (listen verb) support - it unconditionally
+    # discards any binary WS frame sent back to it ("received binary frame,
+    # discarding" in the FreeSWITCH log), so the bot's TTS audio never reaches
+    # the caller no matter how RTP/NAT is configured. 0.9.6 is current as of
+    # this writing and should carry a mod_audio_fork with real playback support.
+    image: drachtio/drachtio-freeswitch-mrf:0.9.6
+    container_name: jambonz_freeswitch
+    restart: unless-stopped
+    # 0.9.6's default ESL password is "JambonzR0ck$", not "ClueCon" (which the
+    # old v1.10.1-full image used and which JAMBONES_FREESWITCH below still
+    # expects) - override it back so feature-server's ESL auth keeps working.
+    # --g711-only: Zoiper's INVITE offers opus first, FreeSWITCH's answer picks
+    # opus+telephone-event only, but Zoiper's actual RTP arrives as PT=0 (PCMU)
+    # regardless of the negotiated answer - a real codec mismatch, confirmed by
+    # inspecting the RTP payload type on the wire. rtpengine silently doesn't
+    # relay packets whose payload type isn't part of the negotiated media
+    # description, so nothing reaches FreeSWITCH. Forcing G.711-only makes
+    # FreeSWITCH's answer match what Zoiper actually transmits.
+    command: freeswitch --sip-port 5062 --rtp-range-start 20000 --rtp-range-end 20020 --password ClueCon --g711-only
+    networks:
+      - voicera_network
+
+  # === App layer (talks to MySQL/Redis/InfluxDB/drachtio) ===
+  jambonz_customer_auth_server:
+    image: jambonz/customer-auth-server:latest
+    container_name: jambonz_customer_auth_server
+    restart: unless-stopped
+    environment:
+      # jambonz rejects a raw IPv4 address as a SIP realm ("...it has an
+      # ipv4 address and sip realm is required"), so the realm is the
+      # hostname "jambonz.local" -- Zoiper's *domain* is jambonz.local while
+      # its *SIP server/outbound proxy* stays 127.0.0.1:5062.
+      # Realm key is 'sip.linphone.org' because the Zoiper/Linphone test
+      # account's SIP Address domain couldn't be changed away from that
+      # (Linphone's quick-account flow locks it); the client's outbound
+      # proxy is explicitly set to 127.0.0.1:5062 so nothing actually
+      # depends on that hostname resolving anywhere.
+      NODE_CONFIG: >-
+        {"server":{"port":4000,"path":"/auth"},
+        "credentials":{"sip.linphone.org":[{"username":"softphone","password":"${SOFTPHONE_SIP_PASSWORD}","expires":3600},{"username":"jambonz","password":"jambonz","expires":3600}]}}
+    networks:
+      - voicera_network
+
+  jambonz_sbc_sip_sidecar:
+    image: jambonz/sbc-sip-sidecar:latest
+    container_name: jambonz_sbc_sip_sidecar
+    restart: unless-stopped
+    environment:
+      DRACHTIO_HOST: jambonz_drachtio
+      DRACHTIO_PORT: "9022"
+      DRACHTIO_SECRET: ${DRACHTIO_SECRET}
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_sbc_inbound:
+    image: jambonz/sbc-inbound:latest
+    container_name: jambonz_sbc_inbound
+    restart: unless-stopped
+    # Default bundled config strips ICE entirely ("ICE": "remove"), forcing
+    # rtpengine to blindly send return media to the plain c= line address
+    # from the caller's offer - Linphone offers its real LAN IP there, which
+    # isn't reliably routable from inside the Docker Desktop VM, even though
+    # Linphone also offers a 127.0.0.1 candidate that IS reachable. Overriding
+    # to "force" makes rtpengine actually do ICE connectivity checks across
+    # all offered candidates and use whichever one actually works.
+    volumes:
+      - ./jambonz/rtp-transcoding.json:/opt/app/data/rtp-transcoding.json:ro
+    environment:
+      DRACHTIO_HOST: jambonz_drachtio
+      DRACHTIO_PORT: "9022"
+      DRACHTIO_SECRET: ${DRACHTIO_SECRET}
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JAMBONES_RTPENGINES: jambonz_rtpengine:22222
+      JAMBONES_NETWORK_CIDR: 172.20.0.0/16
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      JAMBONES_LOGLEVEL: debug
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_sbc_call_router:
+    image: jambonz/sbc-call-router:latest
+    container_name: jambonz_sbc_call_router
+    restart: unless-stopped
+    environment:
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_NETWORK_CIDR: 172.20.0.0/16
+      # Route by the 'tag' each app self-identifies with when connecting to
+      # drachtio (sbc-inbound tags itself 'sbc-inbound' in its own source) -
+      # without this, sbc-call-router falls back to K8S service-name env vars
+      # we don't set, and returns an empty/broken routing target.
+      JAMBONZ_TAGGED_INBOUND: "1"
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_feature_server:
+    image: jambonz/feature-server:latest
+    container_name: jambonz_feature_server
+    restart: unless-stopped
+    environment:
+      # Private drachtio dedicated to feature-server (see jambonz_drachtio_fs) -
+      # NOT the same public one sbc-inbound/sidecar use.
+      DRACHTIO_HOST: jambonz_drachtio_fs
+      DRACHTIO_PORT: "9022"
+      DRACHTIO_SECRET: ${DRACHTIO_SECRET}
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JAMBONES_FREESWITCH: jambonz_freeswitch:8021:ClueCon
+      JAMBONES_SBCS: jambonz_drachtio:5062
+      JAMBONES_NETWORK_CIDR: 172.20.0.0/16
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      JAMBONES_LOGLEVEL: debug
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_api_server:
+    image: jambonz/api-server:latest
+    container_name: jambonz_api_server
+    restart: unless-stopped
+    environment:
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      HTTP_PORT: "3000"
+    ports:
+      - "3005:3000"
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  # One-off schema bootstrap job. Run explicitly with:
+  #   docker compose -f docker-compose.jambonz.yml --env-file .env.jambonz run --rm jambonz_db_create
+  jambonz_db_create:
+    image: jambonz/db-create:latest
+    container_name: jambonz_db_create
+    environment:
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: root
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+    networks:
+      - voicera_network
+    profiles:
+      - tools
+
+volumes:
+  jambonz_mysql_data:
+    driver: local
+  jambonz_influxdb_data:
+    driver: local

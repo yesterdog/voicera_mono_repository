@@ -124,6 +124,9 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_SECURE=false
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - JOHNAIC_SERVER_URL=http://voice_server:7860
+      - JOHNAIC_WEBSOCKET_URL=ws://voice_server:7860
     networks:
       - voicera_network
     depends_on:
