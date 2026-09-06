@@ -1,0 +1,42 @@
+<drachtio>
+
+    <!-- Bind on all interfaces so other containers on voicera_network can connect.
+         Secret is populated from .env.jambonz by ./generate-config.sh. -->
+    <admin port="9022" secret="${DRACHTIO_SECRET}">0.0.0.0</admin>
+
+    <!-- Route INVITE only through sbc-call-router, so it decides (based on
+         source address / JAMBONES_NETWORK_CIDR) whether the tagged
+         'sbc-inbound' app should handle it. Without this, drachtio has no way
+         to choose between multiply-connected apps (sbc-inbound,
+         feature-server) and was dispatching new INVITEs to whichever app
+         raced to claim it first — sometimes feature-server directly, which
+         lacks the X-Account-Sid header sbc-inbound would have added.
+
+         REGISTER/OPTIONS are deliberately left off this list:
+         sbc-call-router's handlers for those methods only work in K8S mode,
+         so routing them here would break the working sbc-sip-sidecar
+         REGISTER flow. -->
+    <request-handlers>
+        <request-handler sip-method="INVITE" http-method="GET">http://jambonz_sbc_call_router:3000/</request-handler>
+    </request-handlers>
+
+    <!-- external-ip: containers on voicera_network reach this drachtio via
+         its internal container IP, but the real remote softphone reaches it
+         via this server's public IP (published port mapping). Without this,
+         drachtio/sbc-inbound puts the internal container IP into the Contact
+         header of responses sent to the softphone, so the softphone's
+         ACK/BYE — routed to that Contact, not the outbound proxy — go
+         nowhere and the call never completes its handshake (ACK timeout,
+         no RTP). -->
+    <sip>
+        <contacts>
+            <contact external-ip="129.121.140.95">sip:*:5062;transport=udp,tcp</contact>
+        </contacts>
+    </sip>
+
+    <logging>
+        <console/>
+        <loglevel>info</loglevel>
+    </logging>
+
+</drachtio>

@@ -635,7 +635,11 @@ async def jambonz_answer_webhook(request: Request):
     await log_meeting(agent_id, _normalize_jambonz_call_payload(payload))
 
     sample_rate = int(os.environ.get("SAMPLE_RATE", "8000"))
-    websocket_prefix = os.environ.get("JOHNAIC_WEBSOCKET_URL", "")
+    # Prefer jambonz-scoped URL — freeswitch and voice_server share the same
+    # docker network, so ws://voice_server:7860 avoids a public-IP hairpin.
+    # Fall back to the shared JOHNAIC_WEBSOCKET_URL for callers that don't
+    # override.
+    websocket_prefix = os.environ.get("JAMBONZ_WEBSOCKET_URL") or os.environ.get("JOHNAIC_WEBSOCKET_URL", "")
     websocket_url = f"{websocket_prefix}/jambonz/agent/{agent_id}"
     return JSONResponse(content=_build_jambonz_response(websocket_url, sample_rate))
 

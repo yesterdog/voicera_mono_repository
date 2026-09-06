@@ -1,0 +1,353 @@
+# Jambonz PoC stack on the Bluehost server.
+#
+# Adapted from the Mac-working version in ~/handoff_jam.md — changes made:
+#   1. voicera_network subnet is 172.18.0.0/16 here (was 172.20.0.0/16 on the
+#      Mac; drachtio's sbc-call-router uses this CIDR to tag incoming INVITEs).
+#   2. External network name is voicera_network (Mac used
+#      voicera_mono_repository_voicera_network, from the repo dir basename).
+#   3. logging: block on every service (mirrors ~/handoff_logs.md decisions;
+#      caps json-file logs at 100MB per container).
+#   4. mem_limit on every service — total ~2.5GB budget so a runaway container
+#      can't OOM the Asterisk stack next door (4GB swap in place too).
+#   5. rtpengine LOCAL_IP is a placeholder — must be set to whatever docker
+#      assigns this container after first `up`, then service recreated once.
+#      Symptom if wrong: crash-loop with "Failed to open UDP NG control
+#      connection port (...): Bad file descriptor".
+#   6. rtp-transcoding.json is mounted from ../jambonz/ (single source of
+#      truth — the file is committed at the repo root under jambonz/).
+#   7. drachtio.conf.xml is generated from drachtio.conf.xml.template via
+#      ./generate-config.sh; the rendered file is gitignored (has the
+#      DRACHTIO_SECRET in cleartext).
+#
+# Bring up sequence (see README-jambonz.md for full detail):
+#   1. bash ./generate-config.sh   # generates .env.jambonz + drachtio.conf.xml
+#   2. docker compose --env-file .env.jambonz up -d jambonz_mysql jambonz_redis jambonz_influxdb
+#   3. wait for healthy, then:
+#      docker compose --env-file .env.jambonz run --rm jambonz_db_create
+#   4. docker compose --env-file .env.jambonz up -d
+#   5. Update rtpengine LOCAL_IP with actual assigned IP, then:
+#      docker compose --env-file .env.jambonz up -d --force-recreate jambonz_rtpengine
+#   6. docker exec jambonz_redis redis-cli SADD default:active-fs jambonz_drachtio_fs:5063
+#
+# Emergency stop that leaves Asterisk untouched:  bash ~/kill-jambonz.sh
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  # === Infra ===
+  jambonz_mysql:
+    image: mysql:8.0
+    container_name: jambonz_mysql
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 400m
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: jambones
+      MYSQL_USER: jambones
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - jambonz_mysql_data:/var/lib/mysql
+    networks:
+      - voicera_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  jambonz_redis:
+    image: redis:7-alpine
+    container_name: jambonz_redis
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 100m
+    networks:
+      - voicera_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  jambonz_influxdb:
+    image: influxdb:1.8
+    container_name: jambonz_influxdb
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 200m
+    environment:
+      INFLUXDB_DB: jambonz_stats
+      INFLUXDB_HTTP_AUTH_ENABLED: "false"
+    volumes:
+      - jambonz_influxdb_data:/var/lib/influxdb
+    networks:
+      - voicera_network
+
+  # === SIP / media core ===
+  jambonz_drachtio:
+    # jambonz/drachtio-server:latest has an undocumented license check that
+    # silently rejects all requests — use the plain upstream image.
+    image: drachtio/drachtio-server:latest
+    container_name: jambonz_drachtio
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 100m
+    command: drachtio -f /etc/drachtio.conf.xml
+    volumes:
+      - ./jambonz/drachtio.conf.xml:/etc/drachtio.conf.xml:ro
+    ports:
+      - "5062:5062/udp"
+      - "5062:5062/tcp"
+    networks:
+      - voicera_network
+
+  # Private drachtio dedicated to feature-server only (no <request-handlers/>,
+  # no other apps connected) — avoids sbc-inbound's B2BUA leg toward
+  # feature-server getting misrouted to the 'sbc-outbound' tag.
+  jambonz_drachtio_fs:
+    image: drachtio/drachtio-server:latest
+    container_name: jambonz_drachtio_fs
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 100m
+    command: drachtio --contact "sip:*:5063;transport=udp,tcp" --secret "${DRACHTIO_SECRET}" --loglevel info
+    networks:
+      - voicera_network
+
+  jambonz_rtpengine:
+    image: jambonz/rtpengine:latest
+    container_name: jambonz_rtpengine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 200m
+    # Image's default 'rtpengine' user can't write /rec (recording spool).
+    user: root
+    # RTPENGINE_PORT_MIN/MAX env vars are NOT read by this image's entrypoint —
+    # port range must be a CLI override, matching the published range below.
+    command: rtpengine --port-min=40000 --port-max=40100
+    environment:
+      RTPENGINE_BIND_NG_PORT: "22222"
+      # LOCAL_IP: this container's own docker-network IP. First bring-up will
+      # crash-loop; then fix via:
+      #   IP=$(docker inspect jambonz_rtpengine --format '{{.NetworkSettings.Networks.voicera_network.IPAddress}}')
+      #   sed -i "s/RTPENGINE_LOCAL_IP=.*/RTPENGINE_LOCAL_IP=$IP/" .env.jambonz
+      #   docker compose --env-file .env.jambonz up -d --force-recreate jambonz_rtpengine
+      LOCAL_IP: "${RTPENGINE_LOCAL_IP}"
+      # PUBLIC_IP: server's real public IP, embedded in SDP for remote clients.
+      PUBLIC_IP: "129.121.140.95"
+    ports:
+      - "40000-40100:40000-40100/udp"
+    # Pinned IP so LOCAL_IP in .env.jambonz stays valid across --force-recreate
+    # (dynamic IPs drift; the handoff's crash-loop scenario was exactly this).
+    networks:
+      voicera_network:
+        ipv4_address: 172.18.0.99
+
+  jambonz_freeswitch:
+    # v1.10.1-full's mod_audio_fork.so (2020-08-31) can't do bidirectional
+    # audio — it discards every binary WS frame sent back. 0.9.6+ actually
+    # supports it.
+    image: drachtio/drachtio-freeswitch-mrf:0.9.6
+    container_name: jambonz_freeswitch
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 400m
+    # 0.9.6's default ESL password is "JambonzR0ck$" — override to ClueCon so
+    # feature-server's JAMBONES_FREESWITCH keeps working.
+    # --g711-only: on the Mac, softphone's actual RTP payload type was PCMU
+    # regardless of the negotiated SDP; forcing G711 fixed rtpengine dropping
+    # packets. Re-verify with tcpdump if audio doesn't flow on this box.
+    command: freeswitch --sip-port 5062 --rtp-range-start 20000 --rtp-range-end 20020 --password ClueCon --g711-only
+    networks:
+      - voicera_network
+
+  # === App layer (talks to MySQL/Redis/InfluxDB/drachtio) ===
+  jambonz_customer_auth_server:
+    image: jambonz/customer-auth-server:latest
+    container_name: jambonz_customer_auth_server
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 150m
+    environment:
+      # SIP realm must be a hostname string (jambonz rejects raw IPv4 realms).
+      # Configurable via ${SOFTPHONE_REALM} in .env.jambonz.
+      NODE_CONFIG: >-
+        {"server":{"port":4000,"path":"/auth"},
+        "credentials":{"${SOFTPHONE_REALM}":[{"username":"softphone","password":"${SOFTPHONE_SIP_PASSWORD}","expires":3600}]}}
+    networks:
+      - voicera_network
+
+  jambonz_sbc_sip_sidecar:
+    image: jambonz/sbc-sip-sidecar:latest
+    container_name: jambonz_sbc_sip_sidecar
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 150m
+    environment:
+      DRACHTIO_HOST: jambonz_drachtio
+      DRACHTIO_PORT: "9022"
+      DRACHTIO_SECRET: ${DRACHTIO_SECRET}
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_sbc_inbound:
+    image: jambonz/sbc-inbound:latest
+    container_name: jambonz_sbc_inbound
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 200m
+    volumes:
+      # Committed at repo root; single source of truth.
+      - ../jambonz/rtp-transcoding.json:/opt/app/data/rtp-transcoding.json:ro
+    environment:
+      DRACHTIO_HOST: jambonz_drachtio
+      DRACHTIO_PORT: "9022"
+      DRACHTIO_SECRET: ${DRACHTIO_SECRET}
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JAMBONES_RTPENGINES: jambonz_rtpengine:22222
+      # Server-specific: voicera_network is 172.18.0.0/16 here, not 172.20.
+      JAMBONES_NETWORK_CIDR: 172.18.0.0/16
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      JAMBONES_LOGLEVEL: debug
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_sbc_call_router:
+    image: jambonz/sbc-call-router:latest
+    container_name: jambonz_sbc_call_router
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 150m
+    environment:
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_NETWORK_CIDR: 172.18.0.0/16
+      # Route by tag sbc-inbound self-identifies with when connecting to
+      # drachtio; without this sbc-call-router falls back to K8S service-name
+      # env vars we don't set and returns a broken route.
+      JAMBONZ_TAGGED_INBOUND: "1"
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_feature_server:
+    image: jambonz/feature-server:latest
+    container_name: jambonz_feature_server
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 250m
+    environment:
+      # Private drachtio dedicated to feature-server (see jambonz_drachtio_fs).
+      DRACHTIO_HOST: jambonz_drachtio_fs
+      DRACHTIO_PORT: "9022"
+      DRACHTIO_SECRET: ${DRACHTIO_SECRET}
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JAMBONES_FREESWITCH: jambonz_freeswitch:8021:ClueCon
+      JAMBONES_SBCS: jambonz_drachtio:5062
+      JAMBONES_NETWORK_CIDR: 172.18.0.0/16
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      JAMBONES_LOGLEVEL: debug
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  jambonz_api_server:
+    image: jambonz/api-server:latest
+    container_name: jambonz_api_server
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 150m
+    environment:
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: jambones
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+      JAMBONES_REDIS_HOST: jambonz_redis
+      JAMBONES_TIME_SERIES_HOST: jambonz_influxdb
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      HTTP_PORT: "3000"
+    ports:
+      - "3005:3000"
+    depends_on:
+      jambonz_mysql:
+        condition: service_healthy
+      jambonz_redis:
+        condition: service_healthy
+    networks:
+      - voicera_network
+
+  # One-off schema bootstrap. Run explicitly:
+  #   docker compose --env-file .env.jambonz run --rm jambonz_db_create
+  jambonz_db_create:
+    image: jambonz/db-create:latest
+    container_name: jambonz_db_create
+    logging: *default-logging
+    mem_limit: 150m
+    environment:
+      JAMBONES_MYSQL_HOST: jambonz_mysql
+      JAMBONES_MYSQL_USER: root
+      JAMBONES_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      JAMBONES_MYSQL_DATABASE: jambones
+    networks:
+      - voicera_network
+    profiles:
+      - tools
+
+volumes:
+  jambonz_mysql_data:
+    driver: local
+  jambonz_influxdb_data:
+    driver: local
+
+networks:
+  voicera_network:
+    external: true
+    name: voicera_network

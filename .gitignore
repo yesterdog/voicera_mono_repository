@@ -12,6 +12,10 @@ backups/mongodb/*.json
 
 # Frontend local env (compose secret); may be empty placeholder
 voicera_frontend/.env.local
+
+# Jambonz PoC secrets — generated locally by jambonz_poc/generate-config.sh
+jambonz_poc/.env.jambonz
+jambonz_poc/jambonz/drachtio.conf.xml
 ai4bharat_tts_server/compare_marathi_tts_metrics.py
 ai4bharat_tts_server/server_grpc.py
 ai4bharat_tts_server/tts_pb2_grpc.py
