@@ -248,6 +248,7 @@ def _resolve_call_identifier(payload: Dict[str, Any]) -> str:
         ("call_uuid",),
         ("call_id",),
         ("callId",),              # Plivo/ws variants
+        ("call_sid",),            # Jambonz call attributes
         ("callSid",),
         ("CallSid",),
         ("request_uuid",),        # outbound response (fallback only)
@@ -575,6 +576,127 @@ async def plivo_websocket_endpoint(websocket: WebSocket, agent_id: str):
         logger.debug(traceback.format_exc())
     finally:
         logger.info(f"🔌 Plivo WebSocket closed: call_sid={call_sid}")
+
+
+def _build_jambonz_response(websocket_url: str, sample_rate: int) -> list:
+    """Build jambonz call-control verb array for bidirectional binary audio streaming.
+
+    Unlike Vobiz/Plivo (XML), jambonz's Calling Webhook expects a JSON array
+    of verb objects in response.
+    """
+    return [
+        {
+            "verb": "listen",
+            "url": websocket_url,
+            "bidirectionalAudio": {
+                "enabled": True,
+                "streaming": True,
+                "sampleRate": sample_rate,
+            },
+        }
+    ]
+
+
+def _normalize_jambonz_call_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Map jambonz's JSON call-attribute payload onto the field names
+    log_meeting()/_resolve_call_identifier() already expect (Vobiz/Plivo-style
+    capitalized keys), while keeping the original jambonz keys too.
+
+    Jambonz's exact field names haven't been confirmed byte-for-byte against a
+    live call yet; this fills in reasonable defaults and logs the raw payload
+    so the mapping can be corrected once a real call is observed.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        **payload,
+        "Direction": payload.get("direction", "inbound"),
+        "From": payload.get("from") or payload.get("caller_id") or "unknown",
+        "To": payload.get("to") or payload.get("caller_name") or "unknown",
+        "CallStatus": payload.get("call_status", ""),
+        "HangupCause": payload.get("hangup_cause", ""),
+    }
+
+
+@app.post("/jambonz/answer")
+async def jambonz_answer_webhook(request: Request):
+    """Jambonz Calling Webhook - returns a `listen` verb pointing at our WebSocket.
+
+    Jambonz posts call attributes as a JSON body (not form-encoded like
+    Vobiz/Plivo), and expects a JSON array of call-control verbs back.
+    """
+    agent_id = request.query_params.get("agent_id")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    logger.info(f"📞 Jambonz answer webhook: agent={agent_id} payload={payload}")
+
+    await log_meeting(agent_id, _normalize_jambonz_call_payload(payload))
+
+    sample_rate = int(os.environ.get("SAMPLE_RATE", "8000"))
+    websocket_prefix = os.environ.get("JOHNAIC_WEBSOCKET_URL", "")
+    websocket_url = f"{websocket_prefix}/jambonz/agent/{agent_id}"
+    return JSONResponse(content=_build_jambonz_response(websocket_url, sample_rate))
+
+
+@app.post("/jambonz/status")
+async def jambonz_status_webhook(request: Request):
+    """Jambonz Call Status Webhook - logs call state changes (e.g. hangup)."""
+    agent_id = request.query_params.get("agent_id")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    logger.info(f"📞 Jambonz status webhook: agent={agent_id} payload={payload}")
+
+    call_status = str(payload.get("call_status", "")).lower()
+    if call_status in {"completed", "failed", "busy", "no-answer"}:
+        await log_meeting(agent_id, _normalize_jambonz_call_payload(payload))
+    return Response(status_code=200)
+
+
+@app.websocket("/jambonz/agent/{agent_id}")
+async def jambonz_websocket_endpoint(websocket: WebSocket, agent_id: str):
+    """WebSocket endpoint for jambonz bidirectional binary audio streaming."""
+    await websocket.accept()
+    logger.info(f"🔌 Jambonz WebSocket connected: agent={agent_id}")
+
+    call_sid = None
+    try:
+        agent_config = await fetch_agent_config_from_backend(agent_id)
+        if not agent_config:
+            logger.error(f"❌ Failed to fetch agent config from backend: {agent_id}")
+            return
+        agent_type = agent_config.get("agent_type")
+
+        # Jambonz sends exactly one JSON text frame with call metadata
+        # immediately after connecting, before any binary audio frames.
+        first_message = await websocket.receive_text()
+        try:
+            metadata = json.loads(first_message)
+        except json.JSONDecodeError:
+            logger.warning(f"⚠️ Jambonz first message was not valid JSON: {first_message[:200]}")
+            metadata = {}
+        logger.info(f"📋 Jambonz call metadata: {metadata}")
+        call_sid = _resolve_call_identifier(metadata)
+
+        call_sid = await bot(
+            websocket,
+            stream_sid=call_sid,
+            call_sid=call_sid,
+            agent_type=agent_type,
+            agent_config=agent_config,
+            provider="jambonz",
+        )
+    except FileNotFoundError as e:
+        logger.error(f"❌ {e}")
+        await websocket.close(code=1008, reason="Agent config not found")
+    except Exception as e:
+        logger.error(f"❌ Jambonz WebSocket error: {e}")
+        logger.debug(traceback.format_exc())
+    finally:
+        logger.info(f"🔌 Jambonz WebSocket closed: call_sid={call_sid}")
 
 
 @app.websocket("/browser/agent/{agent_id}")
