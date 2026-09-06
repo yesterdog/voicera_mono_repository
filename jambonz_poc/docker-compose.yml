@@ -131,7 +131,17 @@ services:
     user: root
     # RTPENGINE_PORT_MIN/MAX env vars are NOT read by this image's entrypoint —
     # port range must be a CLI override, matching the published range below.
-    command: rtpengine --port-min=40000 --port-max=40100
+    #
+    # BOTH --interface flags must be declared on the CLI. Any CLI --interface
+    # REPLACES the config file's interface= line (does not append), so if we
+    # only add --interface=private the pre-baked `public` interface disappears
+    # and BOTH SDP sides get the private address (client is then handed a
+    # 172.18.0.99 target that is unreachable from the internet). Passing both
+    # names — `public/172.18.0.99!129.121.140.95` (bind on container IP,
+    # advertise public IP) and `private/172.18.0.99` (bind and advertise
+    # container IP) — is what sbc-inbound's direction=[public,private] needs
+    # so each SIP peer gets the right destination.
+    command: rtpengine --port-min=40000 --port-max=40100 --interface=public/172.18.0.99!129.121.140.95 --interface=private/172.18.0.99
     environment:
       RTPENGINE_BIND_NG_PORT: "22222"
       # LOCAL_IP: this container's own docker-network IP. First bring-up will
