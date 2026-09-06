@@ -12,11 +12,20 @@ version: '3.8'
 # Bring up Voicera's own stack first, then from the repo root:
 #   docker compose -f asterisk_poc/docker-compose.yml up -d --build
 
+# See root docker-compose.yml for the rationale. Both compose files carry
+# their own copy of this anchor — YAML anchors are file-scoped.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   asterisk:
     image: andrius/asterisk:latest
     container_name: voicera_poc_asterisk
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "5060:5060/udp"   # SIP signaling, for a softphone to register
       - "8088:8088/tcp"   # ARI/HTTP, useful for debugging from the host
@@ -27,6 +36,13 @@ services:
       - ./conf/pjsip.conf:/etc/asterisk/pjsip.conf:ro
       - ./conf/extensions.conf:/etc/asterisk/extensions.conf:ro
       - ./conf/rtp.conf:/etc/asterisk/rtp.conf:ro
+      - ./conf/logger.conf:/etc/asterisk/logger.conf:ro
+      # Named volume for the Asterisk internal log (messages.log). Prior
+      # setup used an anonymous volume whose hash changed on --force-recreate,
+      # silently invalidating host-side logrotate — see ~/handoff_logs.md.
+      # This named volume resolves to /var/lib/docker/volumes/asterisk_poc_asterisk_logs/_data/,
+      # which is what /etc/logrotate.d/asterisk-poc points at.
+      - asterisk_logs:/var/log/asterisk
     networks:
       - voicera_poc_net
       - voicera_network
@@ -37,6 +53,7 @@ services:
       dockerfile: Dockerfile
     container_name: voicera_poc_bridge
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - ./bridge.env
     depends_on:
@@ -44,6 +61,10 @@ services:
     networks:
       - voicera_poc_net
       - voicera_network
+
+volumes:
+  asterisk_logs:
+    driver: local
 
 networks:
   voicera_poc_net:
