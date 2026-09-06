@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Voicera Softphone</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111; color: #eee;
+         display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px 0; box-sizing: border-box; }
+  .card { background: #1c1c1c; border-radius: 16px; padding: 32px; width: 320px; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 13px; margin: 0 0 12px; color: #999; text-transform: uppercase; letter-spacing: .04em; }
+  .sub { color: #888; font-size: 12px; margin-bottom: 20px; }
+  input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 18px; text-align: center;
+          border-radius: 10px; border: 1px solid #333; background: #0d0d0d; color: #eee; margin-bottom: 16px; }
+  .row { display: flex; gap: 10px; }
+  button { flex: 1; padding: 14px; font-size: 15px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; }
+  #callBtn { background: #2ecc71; color: #062; }
+  #callBtn:disabled { background: #2a2a2a; color: #555; cursor: not-allowed; }
+  #hangupBtn { background: #e74c3c; color: #200; }
+  #hangupBtn:disabled { background: #2a2a2a; color: #555; cursor: not-allowed; }
+  .status { margin-top: 18px; text-align: center; font-size: 13px; color: #aaa; }
+  .timer { text-align: center; font-size: 28px; font-variant-numeric: tabular-nums; margin-top: 10px;
+           color: #f1c40f; letter-spacing: .05em; min-height: 34px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot.registered { background: #2ecc71; }
+  .dot.in_call { background: #f1c40f; }
+  .dot.calling { background: #f1c40f; }
+  .dot.error { background: #e74c3c; }
+  .dot.starting { background: #555; }
+  .err { color: #e74c3c; font-size: 12px; margin-top: 8px; word-break: break-word; }
+
+  .divider { border-top: 1px solid #2a2a2a; margin: 24px 0 20px; }
+
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .03em; }
+  .field input { text-align: left; font-size: 14px; padding: 10px 12px; margin-bottom: 0; }
+  .field input:disabled { background: #161616; color: #ccc; border-color: #262626; cursor: default; }
+  .field input:not(:disabled) { background: #0d0d0d; border-color: #3a7bd5; }
+
+  #configBtn { background: #2a2a2a; color: #ddd; }
+  #configSaveBtn { background: #2ecc71; color: #062; }
+  #configCancelBtn { background: #2a2a2a; color: #ddd; }
+  .config-actions { display: none; }
+  .config-actions.visible { display: flex; }
+  #configBtn.hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Voicera Softphone</h1>
+    <div class="sub" id="serverInfo">connecting…</div>
+    <input id="number" type="text" value="8000" inputmode="numeric" />
+    <div class="row">
+      <button id="callBtn" disabled>Call</button>
+      <button id="hangupBtn" disabled>Hang up</button>
+    </div>
+    <div class="status"><span class="dot starting" id="dot"></span><span id="stateText">starting</span></div>
+    <div class="timer" id="timer"></div>
+    <div class="err" id="errText"></div>
+
+    <div class="divider"></div>
+
+    <h2>Configuration</h2>
+    <div class="field">
+      <label for="cfgServerIp">Server IP</label>
+      <input id="cfgServerIp" type="text" disabled />
+    </div>
+    <div class="field">
+      <label for="cfgServerPort">Port</label>
+      <input id="cfgServerPort" type="text" disabled />
+    </div>
+    <div class="field">
+      <label for="cfgDomain">Domain</label>
+      <input id="cfgDomain" type="text" disabled />
+    </div>
+    <div class="field">
+      <label for="cfgUsername">Username</label>
+      <input id="cfgUsername" type="text" disabled />
+    </div>
+    <div class="field">
+      <label for="cfgPassword">Password</label>
+      <input id="cfgPassword" type="password" disabled />
+    </div>
+    <div class="row">
+      <button id="configBtn">Edit</button>
+    </div>
+    <div class="row config-actions" id="configActions">
+      <button id="configCancelBtn">Cancel</button>
+      <button id="configSaveBtn">Save</button>
+    </div>
+  </div>
+
+<script>
+const callBtn = document.getElementById('callBtn');
+const hangupBtn = document.getElementById('hangupBtn');
+const dot = document.getElementById('dot');
+const stateText = document.getElementById('stateText');
+const errText = document.getElementById('errText');
+const serverInfo = document.getElementById('serverInfo');
+const numberInput = document.getElementById('number');
+const timerEl = document.getElementById('timer');
+
+const cfgFields = {
+  server_ip: document.getElementById('cfgServerIp'),
+  server_port: document.getElementById('cfgServerPort'),
+  domain: document.getElementById('cfgDomain'),
+  username: document.getElementById('cfgUsername'),
+  password: document.getElementById('cfgPassword'),
+};
+const configBtn = document.getElementById('configBtn');
+const configActions = document.getElementById('configActions');
+const configSaveBtn = document.getElementById('configSaveBtn');
+const configCancelBtn = document.getElementById('configCancelBtn');
+let configEditing = false;
+let savedConfigValues = {};
+
+function formatElapsed(startEpochSeconds) {
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - startEpochSeconds));
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const ss = String(elapsed % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/status');
+    const s = await res.json();
+    dot.className = 'dot ' + s.state;
+    stateText.textContent = s.state;
+    errText.textContent = s.error || '';
+    serverInfo.textContent = `${s.domain} @ ${s.server}`;
+    callBtn.disabled = s.state !== 'registered';
+    hangupBtn.disabled = !(s.state === 'in_call' || s.state === 'calling');
+    timerEl.textContent = (s.state === 'in_call' && s.call_start_time)
+      ? formatElapsed(s.call_start_time)
+      : '';
+  } catch (e) {
+    stateText.textContent = 'disconnected from local control server';
+  }
+  setTimeout(poll, 1000);
+}
+
+callBtn.addEventListener('click', async () => {
+  await fetch('/api/call', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({number: numberInput.value})
+  });
+});
+
+hangupBtn.addEventListener('click', async () => {
+  await fetch('/api/hangup', {method: 'POST'});
+});
+
+function setConfigEditing(editing) {
+  configEditing = editing;
+  for (const el of Object.values(cfgFields)) el.disabled = !editing;
+  configActions.classList.toggle('visible', editing);
+  configBtn.classList.toggle('hidden', editing);
+}
+
+async function loadConfig() {
+  const res = await fetch('/api/config');
+  const cfg = await res.json();
+  savedConfigValues = cfg;
+  for (const [key, el] of Object.entries(cfgFields)) {
+    el.value = cfg[key] !== undefined ? cfg[key] : '';
+  }
+}
+
+configBtn.addEventListener('click', () => setConfigEditing(true));
+
+configCancelBtn.addEventListener('click', () => {
+  for (const [key, el] of Object.entries(cfgFields)) {
+    el.value = savedConfigValues[key] !== undefined ? savedConfigValues[key] : '';
+  }
+  setConfigEditing(false);
+});
+
+configSaveBtn.addEventListener('click', async () => {
+  const payload = {
+    server_ip: cfgFields.server_ip.value,
+    server_port: parseInt(cfgFields.server_port.value, 10) || 5062,
+    domain: cfgFields.domain.value,
+    username: cfgFields.username.value,
+    password: cfgFields.password.value,
+  };
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  savedConfigValues = payload;
+  setConfigEditing(false);
+});
+
+loadConfig();
+poll();
+</script>
+</body>
+</html>
