@@ -32,6 +32,7 @@ only sees "media" frames on the wire and only ever emits "media" frames.
 
 import base64
 import json
+import time
 from typing import Optional
 
 from loguru import logger
@@ -48,6 +49,27 @@ from pipecat.serializers.base_serializer import FrameSerializer, FrameSerializer
 
 class NeuraCXFrameSerializer(FrameSerializer):
     """Serializer for NeuraCX's WS streaming protocol."""
+
+    # NeuraCX's server rejects outbound `media` events whose base64 payload
+    # is "excessively small" and terminates the call with reason:
+    #   "exiting bidirectional streaming due to excessively small
+    #    Base64 payload in received media event: payload size <N>"
+    # observed on 2026-09-09 with a first-chunk of 640 raw bytes (base64
+    # = 856 chars). Their own inbound chunks are 1599 raw bytes (base64
+    # ~2132 chars), which sets a rough target. We buffer outbound audio
+    # until we have at least MIN_OUT_BYTES raw bytes before emitting a
+    # media event. Small first-utterance latency cost (~80-120 ms while
+    # the buffer fills) but no more rejections.
+    MIN_OUT_BYTES = 1600
+
+    # If more than IDLE_FLUSH_SECONDS pass between outbound AudioRawFrames,
+    # the accumulator is treated as belonging to a previous utterance and
+    # discarded before appending the new frame. Prevents the tail of one
+    # TTS response from getting spliced into the start of the next one,
+    # which produces audible static/glitch at NeuraCX's playback side —
+    # observed on a two-turn call (greeting → user Q → answer) 2026-09-09
+    # 21:52 UTC where the answer's opening bytes came out as noise.
+    IDLE_FLUSH_SECONDS = 0.15
 
     class InputParams(BaseModel):
         """Configuration parameters for NeuraCXFrameSerializer.
@@ -83,6 +105,13 @@ class NeuraCXFrameSerializer(FrameSerializer):
         self._sequence_number = 100
         self._media_chunk = 0
 
+        # Outbound-audio buffer: TTS frames arrive at ~40 ms cadence
+        # (Sarvam @ 24kHz → 8kHz becomes ~640 raw bytes/chunk), well
+        # below NeuraCX's rejection threshold. Accumulate here until we
+        # have MIN_OUT_BYTES worth, then emit one larger media event.
+        self._out_buffer = bytearray()
+        self._last_audio_monotonic = 0.0
+
         self._input_resampler = create_stream_resampler()
         self._output_resampler = create_stream_resampler()
 
@@ -100,6 +129,20 @@ class NeuraCXFrameSerializer(FrameSerializer):
             # driven by the status pingback), so nothing to emit.
             return None
 
+        # If the buffer has stale content from a prior utterance (last
+        # frame was seen more than IDLE_FLUSH_SECONDS ago), drop it —
+        # otherwise the new utterance's first emitted media event would
+        # be a splice of stale-tail + new-start bytes, which NeuraCX
+        # plays as audible static/glitch.
+        now = time.monotonic()
+        if self._out_buffer and (now - self._last_audio_monotonic) > self.IDLE_FLUSH_SECONDS:
+            logger.debug(
+                f"NeuraCX serializer: dropping {len(self._out_buffer)} stale "
+                f"buffer bytes (idle {now - self._last_audio_monotonic:.2f}s)"
+            )
+            self._out_buffer.clear()
+        self._last_audio_monotonic = now
+
         data = frame.audio
         # Pad trailing half-sample with 0x00 (matches NeuraCX's own reference
         # SDK: github.com/devops-prudent/NeuraCX voice-streaming main.py does
@@ -113,7 +156,18 @@ class NeuraCXFrameSerializer(FrameSerializer):
         if not data:
             return None
 
-        payload = base64.b64encode(data).decode("ascii")
+        # Accumulate until we have enough raw bytes to satisfy NeuraCX's
+        # minimum-payload gate (see MIN_OUT_BYTES comment above). Returning
+        # None here tells Pipecat's transport there's nothing to emit yet.
+        self._out_buffer.extend(data)
+        if len(self._out_buffer) < self.MIN_OUT_BYTES:
+            return None
+
+        # Drain the accumulated buffer as one media event.
+        out_bytes = bytes(self._out_buffer)
+        self._out_buffer.clear()
+
+        payload = base64.b64encode(out_bytes).decode("ascii")
 
         # Outbound `media` envelope is minimal, per the NeuraCX reference
         # SDK: JUST {event: "media", media: {payload: b64}}. Do NOT include
@@ -123,10 +177,26 @@ class NeuraCXFrameSerializer(FrameSerializer):
         # but not on `media`.) An earlier version of this serializer echoed
         # the full inbound envelope shape on outbound too; that caused
         # NeuraCX to hang up ~400ms after our first outbound frame.
-        return json.dumps({
+        out_json = json.dumps({
             "event": "media",
             "media": {"payload": payload},
         })
+
+        # TEMPORARY: log first outbound frame's actual size for
+        # verification post-fix. Counters bump on every emitted (not
+        # buffered-only) event; retained since they're serializer-internal
+        # state useful for future outbound event types like `clear`.
+        self._sequence_number += 1
+        self._media_chunk += 1
+        if self._media_chunk == 1:
+            logger.info(
+                f"🔎 NeuraCX first outbound media: "
+                f"input_rate={frame.sample_rate}, wire_rate={self._neuracx_sample_rate}, "
+                f"input_bytes={len(frame.audio)}, out_bytes={len(out_bytes)}, "
+                f"json_len={len(out_json)}, "
+                f"first_60_chars={out_json[:60]!r}"
+            )
+        return out_json
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, bytes):
@@ -146,8 +216,20 @@ class NeuraCXFrameSerializer(FrameSerializer):
             # before Pipecat takes over. A `stop` event mid-stream (or a
             # late-arriving control frame) is rare enough to just log; the
             # WS close that follows will end the pipeline naturally.
+            # TEMPORARY: log EVERY non-media event at INFO with the full
+            # payload — investigating whether NeuraCX ever sends any
+            # error/reject/warning event we've been silently dropping
+            # before their `stop` fires. Trim to DEBUG once diagnosis
+            # is complete.
             if event in ("connected", "start", "stop"):
-                logger.debug(f"NeuraCX serializer: ignoring in-stream event={event}")
+                logger.info(
+                    f"NeuraCX inbound event={event}: {json.dumps(msg)[:600]}"
+                )
+            else:
+                logger.warning(
+                    f"NeuraCX UNRECOGNIZED inbound event={event}: "
+                    f"{json.dumps(msg)[:600]}"
+                )
             return None
 
         media = msg.get("media") or {}
