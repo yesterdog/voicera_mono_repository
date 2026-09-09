@@ -101,10 +101,11 @@ class NeuraCXFrameSerializer(FrameSerializer):
             return None
 
         data = frame.audio
-        # Trim any trailing half-sample before resampling (see deserialize
-        # for the same rationale).
+        # Pad trailing half-sample with 0x00 (matches NeuraCX's own reference
+        # SDK: github.com/devops-prudent/NeuraCX voice-streaming main.py does
+        # exactly `raw_pcm += b"\x00"` on odd-byte buffers).
         if len(data) % 2 != 0:
-            data = data[:-1]
+            data = data + b"\x00"
         if frame.sample_rate != self._neuracx_sample_rate:
             data = await self._output_resampler.resample(
                 data, frame.sample_rate, self._neuracx_sample_rate
@@ -112,24 +113,20 @@ class NeuraCXFrameSerializer(FrameSerializer):
         if not data:
             return None
 
-        self._sequence_number += 1
-        self._media_chunk += 1
         payload = base64.b64encode(data).decode("ascii")
 
-        envelope = {
+        # Outbound `media` envelope is minimal, per the NeuraCX reference
+        # SDK: JUST {event: "media", media: {payload: b64}}. Do NOT include
+        # sequence_number, room_id, chunk, or timestamp on outbound media —
+        # their parser is strict about it and the reference kit omits them.
+        # (room_id is sent on OTHER outbound events like `clear` for barge-in,
+        # but not on `media`.) An earlier version of this serializer echoed
+        # the full inbound envelope shape on outbound too; that caused
+        # NeuraCX to hang up ~400ms after our first outbound frame.
+        return json.dumps({
             "event": "media",
-            "sequence_number": self._sequence_number,
-            "room_id": self._room_id,
-            "media": {
-                "chunk": self._media_chunk,
-                # ms since start, chunk_size approximation. NeuraCX's own
-                # timestamp semantics weren't clarified in the schema doc;
-                # a monotonic ~100ms-per-chunk value matches what they emit.
-                "timestamp": str(self._media_chunk * 100),
-                "payload": payload,
-            },
-        }
-        return json.dumps(envelope)
+            "media": {"payload": payload},
+        })
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         if isinstance(data, bytes):
@@ -164,17 +161,13 @@ class NeuraCXFrameSerializer(FrameSerializer):
             logger.warning("NeuraCX serializer: base64 decode failed on media.payload")
             return None
 
-        # Signed 16-bit PCM requires an even byte count. If NeuraCX ever
-        # emits an odd-byte chunk (or base64 padding produces one), the
-        # soxr resampler downstream errors with "buffer size must be a
-        # multiple of element size" and drops the chunk. Trim the trailing
-        # half-sample defensively.
+        # Signed 16-bit PCM requires an even byte count. NeuraCX in fact
+        # sends 1599-byte chunks (verified live) — an odd count every
+        # frame. Their own reference SDK pads with 0x00 rather than
+        # truncating, so we do the same to keep the sample stream
+        # length-preserved.
         if len(payload) % 2 != 0:
-            logger.debug(
-                f"NeuraCX serializer: odd-byte payload len={len(payload)}, "
-                f"trimming last byte for 16-bit alignment"
-            )
-            payload = payload[:-1]
+            payload = payload + b"\x00"
 
         # NeuraCX confirmed sends signed 16-bit LE PCM at neuracx_sample_rate.
         if self._neuracx_sample_rate != self._sample_rate:
