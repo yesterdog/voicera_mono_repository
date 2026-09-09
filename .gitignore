@@ -16,6 +16,10 @@ voicera_frontend/.env.local
 # Jambonz PoC secrets — generated locally by jambonz_poc/generate-config.sh
 jambonz_poc/.env.jambonz
 jambonz_poc/jambonz/drachtio.conf.xml
+
+# NeuraCX WS-frame captures from the temporary /agent/neuracx-capture route.
+# Remove this line + the capture route once the real neuracx_serializer is done.
+voice_2_voice_server/neuracx-captures/
 ai4bharat_tts_server/compare_marathi_tts_metrics.py
 ai4bharat_tts_server/server_grpc.py
 ai4bharat_tts_server/tts_pb2_grpc.py

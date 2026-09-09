@@ -703,6 +703,107 @@ async def jambonz_websocket_endpoint(websocket: WebSocket, agent_id: str):
         logger.info(f"🔌 Jambonz WebSocket closed: call_sid={call_sid}")
 
 
+@app.websocket("/agent/neuracx-capture/{session_id}")
+async def neuracx_capture_endpoint(websocket: WebSocket, session_id: str):
+    """TEMPORARY WebSocket frame logger for NeuraCX schema discovery.
+
+    NeuraCX doesn't publish its exact WS audio-frame JSON schema (event names,
+    audio encoding, field names). Before writing the real neuracx_serializer.py
+    we need to observe an actual NeuraCX-originated call and capture what its
+    frames actually look like. This route accepts a WS connection, records
+    every text/binary frame with timestamps + JSON-parse attempt to a
+    per-session JSONL file under ./neuracx-captures/, and also mirrors each
+    event to loguru.
+
+    External URL (through nginx TLS):
+        wss://voice.bindit.in/server/agent/neuracx-capture/{session_id}
+
+    REMOVE THIS ROUTE ONCE THE REAL neuracx_serializer.py IS IN PLACE.
+    """
+    await websocket.accept()
+    logger.info(f"🔬 NeuraCX capture: session={session_id} ACCEPTED")
+
+    capture_dir = Path("/app/neuracx-captures")
+    capture_dir.mkdir(exist_ok=True)
+    ts_slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = capture_dir / f"{session_id}-{ts_slug}.jsonl"
+
+    frame_count = 0
+    try:
+        with log_path.open("a") as f:
+            # Record the session opening so downstream analysis has framing context.
+            f.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": "session_open",
+                "session_id": session_id,
+                "client_headers": dict(websocket.headers),
+            }) + "\n")
+            f.flush()
+
+            while True:
+                msg = await websocket.receive()
+                ts = datetime.now(timezone.utc).isoformat()
+
+                if msg["type"] == "websocket.disconnect":
+                    f.write(json.dumps({
+                        "ts": ts, "event": "disconnect", "code": msg.get("code")
+                    }) + "\n")
+                    f.flush()
+                    logger.info(
+                        f"🔬 NeuraCX capture: session={session_id} DISCONNECTED "
+                        f"code={msg.get('code')} after {frame_count} frames"
+                    )
+                    break
+
+                frame_count += 1
+                if "text" in msg and msg["text"] is not None:
+                    text = msg["text"]
+                    try:
+                        parsed = json.loads(text)
+                        record = {
+                            "ts": ts, "frame": frame_count, "type": "text",
+                            "len": len(text), "json_parse": True, "payload": parsed,
+                        }
+                    except json.JSONDecodeError:
+                        record = {
+                            "ts": ts, "frame": frame_count, "type": "text",
+                            "len": len(text), "json_parse": False,
+                            "payload_preview": text[:500],
+                        }
+                    logger.info(
+                        f"🔬 NeuraCX capture: session={session_id} frame#{frame_count} "
+                        f"TEXT len={len(text)} json={record['json_parse']}"
+                    )
+                elif "bytes" in msg and msg["bytes"] is not None:
+                    data = msg["bytes"]
+                    record = {
+                        "ts": ts, "frame": frame_count, "type": "bytes",
+                        "len": len(data), "hex_head": data[:32].hex(),
+                    }
+                    logger.info(
+                        f"🔬 NeuraCX capture: session={session_id} frame#{frame_count} "
+                        f"BYTES len={len(data)}"
+                    )
+                else:
+                    record = {"ts": ts, "frame": frame_count, "type": "unknown",
+                              "raw_keys": list(msg.keys())}
+                    logger.warning(
+                        f"🔬 NeuraCX capture: session={session_id} frame#{frame_count} "
+                        f"UNKNOWN keys={list(msg.keys())}"
+                    )
+
+                f.write(json.dumps(record, default=str) + "\n")
+                f.flush()
+    except Exception as e:
+        logger.error(f"🔬 NeuraCX capture: session={session_id} ERROR {e}")
+        logger.debug(traceback.format_exc())
+    finally:
+        logger.info(
+            f"🔬 NeuraCX capture: session={session_id} DONE — "
+            f"{frame_count} frames captured to {log_path}"
+        )
+
+
 @app.websocket("/browser/agent/{agent_id}")
 async def browser_websocket_endpoint(websocket: WebSocket, agent_id: str):
     """WebSocket endpoint for browser testing with live transcript events."""
