@@ -251,6 +251,8 @@ def _resolve_call_identifier(payload: Dict[str, Any]) -> str:
         ("call_sid",),            # Jambonz call attributes
         ("callSid",),
         ("CallSid",),
+        ("start", "call_id"),     # NeuraCX nested start.call_id
+        ("start", "room_id"),     # NeuraCX room fallback if call_id absent
         ("request_uuid",),        # outbound response (fallback only)
         ("start", "callId"),      # nested websocket start object
         ("start", "callSid"),
@@ -703,105 +705,130 @@ async def jambonz_websocket_endpoint(websocket: WebSocket, agent_id: str):
         logger.info(f"🔌 Jambonz WebSocket closed: call_sid={call_sid}")
 
 
-@app.websocket("/agent/neuracx-capture/{session_id}")
-async def neuracx_capture_endpoint(websocket: WebSocket, session_id: str):
-    """TEMPORARY WebSocket frame logger for NeuraCX schema discovery.
+def _normalize_neuracx_call_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Map NeuraCX's call payload shapes onto the Vobiz/Plivo-style field
+    names log_meeting()/_resolve_call_identifier() already expect, while
+    preserving the original NeuraCX keys for reference.
 
-    NeuraCX doesn't publish its exact WS audio-frame JSON schema (event names,
-    audio encoding, field names). Before writing the real neuracx_serializer.py
-    we need to observe an actual NeuraCX-originated call and capture what its
-    frames actually look like. This route accepts a WS connection, records
-    every text/binary frame with timestamps + JSON-parse attempt to a
-    per-session JSONL file under ./neuracx-captures/, and also mirrors each
-    event to loguru.
+    Handles both the `start` event payload (from the WS) and the status
+    pingback payload (from HTTP), which share the same field vocabulary
+    (call_id, cli, dni, status/event).
+    """
+    if not isinstance(payload, dict):
+        return {}
+    start = payload.get("start") if isinstance(payload.get("start"), dict) else {}
+    stop = payload.get("stop") if isinstance(payload.get("stop"), dict) else {}
+    cli = start.get("cli") or payload.get("cli") or payload.get("from") or "unknown"
+    dni = start.get("dni") or payload.get("dni") or payload.get("to") or "unknown"
+    call_id = (
+        start.get("call_id") or payload.get("call_id")
+        or stop.get("call_id") or payload.get("callId") or ""
+    )
+    status = str(
+        payload.get("status") or payload.get("event") or ""
+    )
+    return {
+        **payload,
+        "Direction": payload.get("direction", "inbound"),
+        "From": cli,
+        "To": dni,
+        "CallStatus": status,
+        "call_id": call_id,
+    }
 
-    External URL (through nginx TLS):
-        wss://voice.bindit.in/server/agent/neuracx-capture/{session_id}
 
-    REMOVE THIS ROUTE ONCE THE REAL neuracx_serializer.py IS IN PLACE.
+@app.post("/neuracx/status")
+async def neuracx_status_webhook(request: Request):
+    """NeuraCX pingback for call-status events (initiated/ringing/answered/
+    completed/failed/expired). Logged only; no verb response required."""
+    agent_id = request.query_params.get("agent_id")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    logger.info(f"📞 NeuraCX status webhook: agent={agent_id} payload={payload}")
+
+    status = str(payload.get("status") or payload.get("event") or "").lower()
+    if status in {"completed", "failed", "expired", "no-answer", "busy"}:
+        await log_meeting(agent_id, _normalize_neuracx_call_payload(payload))
+    return Response(status_code=200)
+
+
+@app.websocket("/neuracx/agent/{agent_id}")
+async def neuracx_websocket_endpoint(websocket: WebSocket, agent_id: str):
+    """WebSocket endpoint for NeuraCX bidirectional audio streaming.
+
+    NeuraCX's outbound Call API stream_url points here (via nginx TLS at
+    wss://voice.bindit.in/server/neuracx/agent/{agent_id}). Wire schema
+    (captured 2026-09-09, see serializer/neuracx_serializer.py for full
+    envelope): first frame is `{"event":"connected"}`, second is `start`
+    with call metadata (room_id, call_id, cli, dni, custom_parameters,
+    media_format). We consume both here, log the meeting, then delegate
+    to bot() with the NeuraCX serializer that only ever sees the `media`
+    frames that follow.
     """
     await websocket.accept()
-    logger.info(f"🔬 NeuraCX capture: session={session_id} ACCEPTED")
+    logger.info(f"🌐 NeuraCX WebSocket connected: agent={agent_id}")
 
-    capture_dir = Path("/app/neuracx-captures")
-    capture_dir.mkdir(exist_ok=True)
-    ts_slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    log_path = capture_dir / f"{session_id}-{ts_slug}.jsonl"
-
-    frame_count = 0
+    room_id = None
+    call_id = None
     try:
-        with log_path.open("a") as f:
-            # Record the session opening so downstream analysis has framing context.
-            f.write(json.dumps({
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "event": "session_open",
-                "session_id": session_id,
-                "client_headers": dict(websocket.headers),
-            }) + "\n")
-            f.flush()
+        agent_config = await fetch_agent_config_from_backend(agent_id)
+        if not agent_config:
+            logger.error(f"❌ NeuraCX: failed to fetch agent config for {agent_id}")
+            return
+        agent_type = agent_config.get("agent_type")
 
-            while True:
-                msg = await websocket.receive()
-                ts = datetime.now(timezone.utc).isoformat()
+        # Consume NeuraCX's control-frame preamble before Pipecat takes over.
+        # In the observed schema this is exactly `connected` then `start` —
+        # but tolerate slight variation in ordering.
+        while room_id is None:
+            first_message = await websocket.receive_text()
+            try:
+                metadata = json.loads(first_message)
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"⚠️ NeuraCX preamble non-JSON: {first_message[:200]}"
+                )
+                continue
+            event = metadata.get("event")
+            if event == "connected":
+                logger.info(f"🌐 NeuraCX: {agent_id} preamble 'connected'")
+                continue
+            if event == "start":
+                start = metadata.get("start") or {}
+                room_id = start.get("room_id") or metadata.get("room_id")
+                call_id = start.get("call_id")
+                logger.info(
+                    f"🌐 NeuraCX start: room_id={room_id} call_id={call_id} "
+                    f"cli={start.get('cli')} dni={start.get('dni')} "
+                    f"media_format={start.get('media_format')} "
+                    f"custom_parameters={start.get('custom_parameters')}"
+                )
+                await log_meeting(agent_id, _normalize_neuracx_call_payload(metadata))
+                break
+            logger.warning(f"⚠️ NeuraCX unexpected preamble event: {event}")
 
-                if msg["type"] == "websocket.disconnect":
-                    f.write(json.dumps({
-                        "ts": ts, "event": "disconnect", "code": msg.get("code")
-                    }) + "\n")
-                    f.flush()
-                    logger.info(
-                        f"🔬 NeuraCX capture: session={session_id} DISCONNECTED "
-                        f"code={msg.get('code')} after {frame_count} frames"
-                    )
-                    break
+        if not room_id:
+            logger.error("❌ NeuraCX: never received `start` event with room_id — aborting")
+            return
 
-                frame_count += 1
-                if "text" in msg and msg["text"] is not None:
-                    text = msg["text"]
-                    try:
-                        parsed = json.loads(text)
-                        record = {
-                            "ts": ts, "frame": frame_count, "type": "text",
-                            "len": len(text), "json_parse": True, "payload": parsed,
-                        }
-                    except json.JSONDecodeError:
-                        record = {
-                            "ts": ts, "frame": frame_count, "type": "text",
-                            "len": len(text), "json_parse": False,
-                            "payload_preview": text[:500],
-                        }
-                    logger.info(
-                        f"🔬 NeuraCX capture: session={session_id} frame#{frame_count} "
-                        f"TEXT len={len(text)} json={record['json_parse']}"
-                    )
-                elif "bytes" in msg and msg["bytes"] is not None:
-                    data = msg["bytes"]
-                    record = {
-                        "ts": ts, "frame": frame_count, "type": "bytes",
-                        "len": len(data), "hex_head": data[:32].hex(),
-                    }
-                    logger.info(
-                        f"🔬 NeuraCX capture: session={session_id} frame#{frame_count} "
-                        f"BYTES len={len(data)}"
-                    )
-                else:
-                    record = {"ts": ts, "frame": frame_count, "type": "unknown",
-                              "raw_keys": list(msg.keys())}
-                    logger.warning(
-                        f"🔬 NeuraCX capture: session={session_id} frame#{frame_count} "
-                        f"UNKNOWN keys={list(msg.keys())}"
-                    )
-
-                f.write(json.dumps(record, default=str) + "\n")
-                f.flush()
+        await bot(
+            websocket,
+            stream_sid=room_id,   # NeuraCX room_id fills the stream_sid slot
+            call_sid=call_id,     # NeuraCX call_id fills the call_sid slot
+            agent_type=agent_type,
+            agent_config=agent_config,
+            provider="neuracx",
+        )
+    except FileNotFoundError as e:
+        logger.error(f"❌ NeuraCX: {e}")
+        await websocket.close(code=1008, reason="Agent config not found")
     except Exception as e:
-        logger.error(f"🔬 NeuraCX capture: session={session_id} ERROR {e}")
+        logger.error(f"❌ NeuraCX WebSocket error: {e}")
         logger.debug(traceback.format_exc())
     finally:
-        logger.info(
-            f"🔬 NeuraCX capture: session={session_id} DONE — "
-            f"{frame_count} frames captured to {log_path}"
-        )
+        logger.info(f"🌐 NeuraCX WebSocket closed: call_id={call_id} room_id={room_id}")
 
 
 @app.websocket("/browser/agent/{agent_id}")

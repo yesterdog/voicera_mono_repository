@@ -17,8 +17,11 @@ voicera_frontend/.env.local
 jambonz_poc/.env.jambonz
 jambonz_poc/jambonz/drachtio.conf.xml
 
-# NeuraCX WS-frame captures from the temporary /agent/neuracx-capture route.
-# Remove this line + the capture route once the real neuracx_serializer is done.
+# NeuraCX WS-frame captures — historical from the (now-removed) temporary
+# /agent/neuracx-capture route used to reverse-engineer NeuraCX's schema
+# in 2026-09. Directory retained on the server for reference; leave in
+# .gitignore so old captures (which contain real call audio + phone
+# numbers) can't be accidentally committed.
 voice_2_voice_server/neuracx-captures/
 ai4bharat_tts_server/compare_marathi_tts_metrics.py
 ai4bharat_tts_server/server_grpc.py

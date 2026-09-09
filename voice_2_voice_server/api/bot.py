@@ -28,6 +28,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 from storage.minio_client import MinIOStorage
 from serializer.vobiz_serializer import VobizFrameSerializer
 from serializer.jambonz_serializer import JambonzFrameSerializer
+from serializer.neuracx_serializer import NeuraCXFrameSerializer
 from .services import (
     create_llm_service,
     create_stt_service,
@@ -447,6 +448,21 @@ async def bot(
             call_sid=call_sid,
             params=JambonzFrameSerializer.InputParams(
                 jambonz_sample_rate=sample_rate,
+                sample_rate=sample_rate,
+            ),
+        )
+    elif normalized_provider == "neuracx":
+        # NeuraCX's WS wire schema echoes `room_id` from the `start` event
+        # on every subsequent frame; the WS route handler extracts it and
+        # passes it in via stream_sid. call_sid slot carries NeuraCX's
+        # separate call_id.
+        stream_sid = stream_sid or "unknown"
+        call_sid = call_sid or "unknown"
+        serializer = NeuraCXFrameSerializer(
+            room_id=stream_sid,
+            call_id=call_sid,
+            params=NeuraCXFrameSerializer.InputParams(
+                neuracx_sample_rate=sample_rate,
                 sample_rate=sample_rate,
             ),
         )
