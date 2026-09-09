@@ -62,6 +62,7 @@ from utils.bot_utils import (
     get_user_silence_hangup_seconds,
     is_non_conversational,
     patch_immediate_first_chunk,
+    patch_tts_skip_empty,
 )
 from utils.language_switching import (
     build_language_switch_system_prompt,
@@ -179,6 +180,10 @@ async def run_bot(
         )
         stt = create_stt_service(stt_config, sample_rate, vad_analyzer=vad_analyzer, org_id=org_id)
         tts = create_tts_service(tts_config, sample_rate, org_id=org_id)
+        # Skip TTS calls for text with no alphanumerics (e.g., a lone `"`
+        # or ` and ` emitted by the LLM/aggregator boundary). Prevents the
+        # Sarvam 400 error that once got the pipeline teardown stuck.
+        patch_tts_skip_empty(tts)
 
         stt_provider_name = str(stt_config.get("name") or "").strip().lower()
         if llm_provider_name == "kenpath":

@@ -295,6 +295,37 @@ class BargeInInterruptionProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+def patch_tts_skip_empty(tts):
+    """Wrap tts.run_tts to silently skip text chunks that have no
+    alphanumeric characters.
+
+    Motivation: when the LLM streams a response, pipecat's punctuation-based
+    text aggregator can produce sentence-boundary chunks like `"`, ` "`,
+    ` and `, or `Next` on their own (e.g., splitting on `.`/`?`/`!` inside
+    quoted material). Sarvam TTS rejects any request whose text has no
+    characters from the allowed language set with:
+        400: Text must contain at least one character from the allowed languages.
+    Pipecat marks the resulting ErrorFrame `fatal: False`, but on at least
+    one observed call this got the pipeline teardown stuck — voice_server
+    became non-responsive to /health until docker restart. Skipping those
+    empty/punct-only chunks at the TTS boundary prevents the trigger.
+
+    Applies to any pipecat TTSService (Sarvam, ai4bharat, etc.) since
+    the interface is the same. Safe no-op for text that contains real
+    words — only punctuation-only/whitespace-only/empty passes are skipped.
+    """
+    orig_run_tts = tts.run_tts
+
+    async def _run_tts_skip_empty(text):
+        if not text or not any(c.isalnum() for c in text):
+            logger.debug(f"TTS: skipping empty/no-alnum chunk {text!r}")
+            return
+        async for frame in orig_run_tts(text):
+            yield frame
+
+    tts.run_tts = _run_tts_skip_empty
+
+
 def patch_immediate_first_chunk(transport):
     """Patch transport to send first audio chunk immediately with zero delay."""
     output = transport.output()
