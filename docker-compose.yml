@@ -154,9 +154,15 @@ services:
     restart: unless-stopped
     logging: *default-logging
     ports:
-      - "8080:8080"
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Let's Encrypt cert directories are bind-mounted read-only.
+      # /etc/letsencrypt/live/*/*.pem are symlinks to /etc/letsencrypt/archive/*/,
+      # so BOTH dirs need to be mounted for the certs to resolve inside the container.
+      - /etc/letsencrypt/live/voice.bindit.in:/etc/letsencrypt/live/voice.bindit.in:ro
+      - /etc/letsencrypt/archive/voice.bindit.in:/etc/letsencrypt/archive/voice.bindit.in:ro
     networks:
       - voicera_network
 
