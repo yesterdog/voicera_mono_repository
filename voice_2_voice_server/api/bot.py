@@ -458,11 +458,21 @@ async def bot(
         # separate call_id.
         stream_sid = stream_sid or "unknown"
         call_sid = call_sid or "unknown"
+        # neuracx_sample_rate is the WIRE rate (what NeuraCX puts on the
+        # WS, and what NeuraCX expects back), locked to 8000 per the
+        # media_format contract observed in the live start event
+        # (encoding=raw, sample_rate=8000, bit_rate=128000). This is
+        # separate from the pipeline `sample_rate` (typically 16000);
+        # the serializer resamples between the two on both directions.
+        # Do NOT pass the pipeline rate as neuracx_sample_rate — that's
+        # what broke the first end-to-end test (TTS bytes at pipeline
+        # rate got sent as-is, NeuraCX's audio watchdog hung up after
+        # ~3s of unusable audio).
         serializer = NeuraCXFrameSerializer(
             room_id=stream_sid,
             call_id=call_sid,
             params=NeuraCXFrameSerializer.InputParams(
-                neuracx_sample_rate=sample_rate,
+                neuracx_sample_rate=8000,
                 sample_rate=sample_rate,
             ),
         )

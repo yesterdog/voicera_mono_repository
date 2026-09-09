@@ -101,6 +101,10 @@ class NeuraCXFrameSerializer(FrameSerializer):
             return None
 
         data = frame.audio
+        # Trim any trailing half-sample before resampling (see deserialize
+        # for the same rationale).
+        if len(data) % 2 != 0:
+            data = data[:-1]
         if frame.sample_rate != self._neuracx_sample_rate:
             data = await self._output_resampler.resample(
                 data, frame.sample_rate, self._neuracx_sample_rate
@@ -159,6 +163,18 @@ class NeuraCXFrameSerializer(FrameSerializer):
         except (ValueError, TypeError):
             logger.warning("NeuraCX serializer: base64 decode failed on media.payload")
             return None
+
+        # Signed 16-bit PCM requires an even byte count. If NeuraCX ever
+        # emits an odd-byte chunk (or base64 padding produces one), the
+        # soxr resampler downstream errors with "buffer size must be a
+        # multiple of element size" and drops the chunk. Trim the trailing
+        # half-sample defensively.
+        if len(payload) % 2 != 0:
+            logger.debug(
+                f"NeuraCX serializer: odd-byte payload len={len(payload)}, "
+                f"trimming last byte for 16-bit alignment"
+            )
+            payload = payload[:-1]
 
         # NeuraCX confirmed sends signed 16-bit LE PCM at neuracx_sample_rate.
         if self._neuracx_sample_rate != self._sample_rate:
