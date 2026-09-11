@@ -11,6 +11,7 @@ from loguru import logger
 from apps.runtime.services.agent_routing import (
     AgentRoutingError,
     agent_category,
+    preamble_policy,
     telephony_provider,
 )
 from apps.runtime.services.backend import BackendError, backend_client
@@ -109,15 +110,33 @@ async def agent_websocket(websocket: WebSocket, org_id: str, agent_id: str) -> N
             return
 
         provider = telephony_provider(agent)
+        policy = preamble_policy(provider)
 
-        first = await websocket.receive_text()
-        data: dict[str, Any] = json.loads(first)
-        if data.get("event") != "start":
+        data: dict[str, Any] = {}
+        max_preamble_frames = 10
+        for _ in range(max_preamble_frames):
+            raw = await websocket.receive_text()
+            data = json.loads(raw)
+            event = data.get("event")
+            if event in policy.skip_events:
+                logger.info("Skipping {} preamble event {!r}", provider, event)
+                continue
+            if event != policy.start_event:
+                logger.warning(
+                    "Expected {!r} event, got {!r} — closing",
+                    policy.start_event,
+                    event,
+                )
+                await websocket.close(code=1008, reason=f"Expected {policy.start_event} event")
+                return
+            break
+        else:
             logger.warning(
-                "Expected start event, got {!r} — closing",
-                data.get("event"),
+                "Never received {!r} event within {} preamble frames — closing",
+                policy.start_event,
+                max_preamble_frames,
             )
-            await websocket.close(code=1008, reason="Expected start event")
+            await websocket.close(code=1008, reason=f"Expected {policy.start_event} event")
             return
 
         start_info = data.get("start") or {}
@@ -132,6 +151,7 @@ async def agent_websocket(websocket: WebSocket, org_id: str, agent_id: str) -> N
         stream_sid = (
             start_info.get("streamSid")
             or start_info.get("streamId")
+            or start_info.get("room_id")  # NeuraCX
             or "unknown"
         )
         logger.info(

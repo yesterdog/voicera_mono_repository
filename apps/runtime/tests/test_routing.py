@@ -166,3 +166,59 @@ def test_telephony_agent_missing_provider_closes_socket(
         pass
 
     run_telephony_bot_mock.assert_not_awaited()
+
+
+@patch("apps.runtime.routes.agent.run_telephony_bot", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.get_agent", new_callable=AsyncMock)
+def test_neuracx_agent_skips_connected_preamble_before_start(
+    get_agent_mock: AsyncMock,
+    run_telephony_bot_mock: AsyncMock,
+    client: TestClient,
+) -> None:
+    """NeuraCX sends a bare `connected` ack before `start` — the route must
+    tolerate it via the provider's registered preamble policy, using
+    `room_id` (NeuraCX has no streamSid/streamId) as the stream_sid."""
+    agent = _telephony_agent(provider="neuracx")
+    get_agent_mock.return_value = agent
+
+    with client.websocket_connect("/agent/org-1/agent-1") as websocket:
+        websocket.send_json({"event": "connected"})
+        websocket.send_json(
+            {
+                "event": "start",
+                "start": {
+                    "room_id": "room-789",
+                    "call_id": "call-456",
+                    "cli": "+911234567890",
+                    "dni": "+919876543210",
+                },
+            }
+        )
+        websocket.close()
+
+    run_telephony_bot_mock.assert_awaited_once()
+    _, kwargs = run_telephony_bot_mock.await_args
+    assert kwargs["provider"] == "neuracx"
+    assert kwargs["call_sid"] == "call-456"
+    assert kwargs["stream_sid"] == "room-789"
+
+
+@patch("apps.runtime.routes.agent.run_telephony_bot", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.get_agent", new_callable=AsyncMock)
+def test_vobiz_agent_still_rejects_non_start_first_frame(
+    get_agent_mock: AsyncMock,
+    run_telephony_bot_mock: AsyncMock,
+    client: TestClient,
+) -> None:
+    """Regression guard: providers without a registered preamble policy
+    (the default) must still require `start` as the very first frame —
+    the NeuraCX preamble-skip addition must not loosen this for anyone
+    else."""
+    agent = _telephony_agent(provider="vobiz")
+    get_agent_mock.return_value = agent
+
+    with client.websocket_connect("/agent/org-1/agent-1") as websocket:
+        websocket.send_json({"event": "connected"})
+        websocket.close()
+
+    run_telephony_bot_mock.assert_not_awaited()
