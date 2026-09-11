@@ -1,349 +1,237 @@
-# VoicEra Mono Repository
+<div align="center">
 
-A complete voice AI building block with telephony integration, featuring real-time speech-to-text, text-to-speech, and LLM-powered conversational agents.
+# 🎙️ VoicEra
 
-**Full documentation:** [voicera.gitbook.io/voicera-docs](https://voicera.gitbook.io/voicera-docs)
+**Open-source infrastructure for self-hosted, real-time voice AI.**
 
-## Architecture Overview
+Build telephony agents in Indian languages — with **your infrastructure, your data, and your choice of models and carriers.**
+<br>
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         VoicEra_mono_repository                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
-│  │   Frontend   │    │   Backend    │    │ Voice Server │       │
-│  │   (Next.js)  │◄──►│  (FastAPI)   │◄──►│  (Pipecat)   │       │
-│  │   :3000      │    │   :8000      │    │   :7860      │       │
-│  └──────────────┘    └──────────────┘    └──────────────┘       │
-│                             │                   │               │
-│                             ▼                   ▼               │
-│                      ┌──────────────┐    ┌──────────────┐       │
-│                      │   MongoDB    │    │    MinIO     │       │
-│                      │   :27017     │    │  :9000/:9001 │       │
-│                      └──────────────┘    └──────────────┘       │
-│                                                                 │
-│  ┌──────────────────────────────────────────────────────┐       │
-│  │            Optional: Local AI4Bharat Servers         │       │
-│  │  ┌──────────────┐              ┌──────────────┐      │       │
-│  │  │  STT Server  │              │  TTS Server  │      │       │
-│  │  │   :8001      │              │   :8002      │      │       │
-│  │  └──────────────┘              └──────────────┘      │       │
-│  └──────────────────────────────────────────────────────┘       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
+[![Apache 2.0 License](https://img.shields.io/badge/license-Apache%202.0-111827?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-111827?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Docker](https://img.shields.io/badge/docker-ready-111827?style=flat-square&logo=docker&logoColor=white)](docker-compose.yaml)
+[![Docs](https://img.shields.io/badge/docs-read-111827?style=flat-square)](https://voicera.mintlify.app/docs/guides)
+[![Contributions](https://img.shields.io/badge/contributions-welcome-111827?style=flat-square)](CONTRIBUTING.md)
 
-## Services
+<br>
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `frontend` | 3000 | Next.js web dashboard for agent management |
-| `backend` | 8000 | FastAPI REST API for data management |
-| `voice_server` | 7860 | Real-time voice processing with Pipecat |
-| `ferretdb` | 27017 | Mongo-compatible DB (FerretDB over PostgreSQL) |
-| `postgres` | (internal) | FerretDB backing store (DocumentDB extension) |
-| `minio` | 9000/9001 | Object storage for recordings & transcripts |
-| `ai4bharat_stt_server` | 8001 | Local Indic STT (optional) |
-| `ai4bharat_tts_server` | 8002 | Local Indic TTS (optional) |
+**[Quick Start](#quick-start)** &nbsp; · &nbsp;
+**[Architecture](#architecture)** &nbsp; · &nbsp;
+**[Low-Resource Languages](#built-for-low-resource-languages)** &nbsp; · &nbsp;
+**[Contributing](#contributing)**
 
----
+</div>
 
-## Quick Start
 
-### Prerequisites
+## Why VoicEra?
 
-- Docker & Docker Compose
-- Node.js 18+ (for local frontend development)
-- Python 3.10+ (for local voice server development)
-- CUDA-capable GPU (optional, for local AI4Bharat servers)
+Voice AI is increasingly powerful, but production deployments can create lock-in around **models, telephony, data, and infrastructure**.
 
-### 1. Clone and Setup Environment
+VoicEra is an open infrastructure layer that puts those choices back with the operator.
+
+- **Self-hosted by design** — run the platform on infrastructure you control.
+- **Provider neutral** — swap STT, TTS, LLM, and telephony providers without rewriting the platform.
+- **Data ownership** — call media, transcripts, and recordings stay in your infrastructure.
+- **Public-good friendly** — Apache 2.0 licensed, transparent, forkable, and deployable without a VoicEra-managed service.
+- **Composable** — use cloud APIs, local models, or a mix of both.
+
+> **VoicEra is platform you own, not another AI vendor.**
+
+## Quick start
 
 ```bash
-git clone <repository-url>
-cd voicera_mono_repository
+git clone https://github.com/COSS-India/VoicEra.git
+cd VoicEra
+
+make application-up
 ```
 
-### 2. Configure Environment Variables
+`make application-up` creates the environment, generates required secrets, and starts the stack.
 
-Copy the example environment files and configure them:
+> **Important:** use `make application-up` instead of a bare `docker compose up`. Some services require the generated `SECRET_KEY`.
+
+Once running:
+
+| Service | URL |
+|---|---|
+| Dashboard | `http://localhost:3000` |
+| API | `http://localhost:8000` |
+| OpenAPI | `http://localhost:8000/docs` |
+| Runtime | `http://localhost:7860` |
+| MinIO | `http://localhost:9001` |
+| FerretDB | `http://localhost:27018` |
 
 ```bash
-# Backend
-cp voicera_backend/env.example voicera_backend/.env
-
-# Frontend
-cp voicera_frontend/.env.example voicera_frontend/.env.local
-
-# Voice Server
-cp voice_2_voice_server/.env.example voice_2_voice_server/.env
-
-# AI4Bharat servers (optional)
-cp ai4bharat_stt_server/.env.example ai4bharat_stt_server/.env
-cp ai4bharat_tts_server/.env.example ai4bharat_tts_server/.env
+make application-down
 ```
 
-See [Environment Configuration](#environment-configuration) below for detailed variable descriptions.
+See the [documentation](https://voicera.mintlify.app/docs/guides) for production deployment and configuration.
 
-### 3. Start All Services
+You bring the models and telephony account. VoicEra connects them into a deployable system.
 
-```bash
-# Build all Docker images
-make build-all-services
+## Architecture
 
-# Start all services
-make start-all-services
+```mermaid
+flowchart LR
+  C["Caller"] <--> T["Telephony<br/>Vobiz · Plivo"]
 
-# Stop all services
-make stop-all-services
+  T -->|"audio"| R["Voice Runtime<br/>Pipecat"]
+  R <--> P["AI Providers<br/>STT · LLM · TTS"]
+
+  U["Operator"] --> D["Dashboard"]
+  D --> A["API"]
+  A --> R
+
+  A --> DB[("FerretDB<br/>PostgreSQL")]
+  A --> S[("MinIO<br/>Media & artifacts")]
+  A --> Q[("Redis")]
+  Q --> W["Workers"]
+
+  R --> S
+  W --> DB
 ```
 
----
+The platform separates **control plane** from **real-time execution**:
 
-## Makefile Commands
+- **API** — agents, configuration, campaigns, authentication, and orchestration.
+- **Runtime** — live call audio and model interaction.
+- **Dashboard** — operator interface.
+- **Workers** — asynchronous jobs and campaign execution.
+- **Storage** — self-hosted database, object storage, and queue.
+- **Providers** — interchangeable AI and telephony integrations.
 
-The Makefile provides convenient commands for managing the services:
+[Read the architecture guide →](https://voicera.mintlify.app/docs/guides/concepts/architecture)
 
-### Primary Commands
+## Designed for digital public infrastructure
 
-| Command | Description |
-|---------|-------------|
-| `make build-all-services` | Build Docker images for all core services (backend, minio, frontend, voice_server) |
-| `make start-all-services` | Start all core services in detached mode (postgres, ferretdb, …) |
-| `make stop-all-services` | Stop all core services |
-| `make migrate-to-ferretdb` | Dump MongoDB and cut over to FerretDB |
+VoicEra follows principles that matter for Digital Public Goods:
 
-### Backend-Only Commands
+| Principle | VoicEra |
+|---|---|
+| **Open source** | Apache 2.0-licensed source code |
+| **Self-hostable** | Deploy on infrastructure you control |
+| **Interoperable** | Provider registries and defined integration contracts |
+| **No platform lock-in** | Swap model and telephony providers |
+| **Data sovereignty** | Operators control call data and storage |
+| **Reusable** | API-driven components and provider adapters |
+| **Inclusive** | First-class support for Indian languages and low-resource deployments |
+| **Transparent** | Public source, documentation, and contribution process |
 
-| Command | Description |
-|---------|-------------|
-| `make build-backend-services` | Build only backend infrastructure (backend, minio) |
-| `make start-backend-services` | Start postgres, ferretdb, backend, minio |
-| `make stop-backend-services` | Stop backend services |
+VoicEra is intended to be **reused, adapted, and independently operated** — including by governments, NGOs, public-interest organisations, and other open-source projects.
 
-### Development Commands
 
-| Command | Description |
-|---------|-------------|
-| `make start-frontend` | Start frontend dev server locally (kills existing :3000 process) |
-| `make start-voice-only-services` | Start AI4Bharat STT/TTS and voice server locally (requires venv) |
-| `make start-dev` | Start everything for local development |
-| `make stop-dev` | Stop all development services |
-| `make stop-all-ports` | Force kill all service ports (3000, 27017, 8000, 8001, 8002, 7860) |
+## Extending VoicEra
 
----
+Integrations live behind stable interfaces, so adding a provider should not require changing the core runtime.
 
-## Environment Configuration
+### Add an AI provider
 
-### Backend (`voicera_backend/.env`)
+Create a provider under:
 
-```bash
-# MongoDB Configuration
-MONGODB_HOST=localhost          # Use 'mongodb' (FerretDB alias) when running in Docker
-MONGODB_PORT=27017
-MONGODB_USER=admin
-MONGODB_PASSWORD=admin123
-MONGODB_DATABASE=voicera
-MONGODB_AUTH_SOURCE=admin
-
-# Application
-DEBUG=False
-SECRET_KEY=your-secret-key      # Generate: python -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# Email (Mailtrap)
-MAILTRAP_API_TOKEN=your-mailtrap-token
-MAILTRAP_FROM_EMAIL=noreply@voicera.com
-MAILTRAP_FROM_NAME=VoicEra
-FRONTEND_URL=http://localhost:3000
-
-# Internal API (service-to-service auth)
-INTERNAL_API_KEY=your-internal-api-key
-
-# MinIO Storage
-MINIO_ENDPOINT=minio:9000       # Use 'localhost:9000' for local dev
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-
-# Vobiz Telephony API
-VOBIZ_API_BASE_URL=https://api.vobiz.in/v1
-VOBIZ_ACCOUNT_ID=your-account-id
-VOBIZ_AUTH_ID=your-auth-id
-VOBIZ_AUTH_TOKEN=your-auth-token
+```text
+apps/providers/{cloud,adapters,local}/
 ```
 
-### Frontend (`voicera_frontend/.env.local`)
+STT, TTS, and LLM providers register through the provider registry.
 
-```bash
-NEXT_PUBLIC_JOHNAIC_SERVER_URL=https://your-public-voice-host
-VOICE_SERVER_URL=http://localhost:7860
+[Add an AI provider →](https://voicera.mintlify.app/docs/developer/guides/adding-a-provider)
 
-# Backend is proxied via Next.js /api/* routes to http://localhost:8000 (hardcoded).
-# Docker Compose sets API_URL=http://backend:8000 on the frontend container.
+### Add a telephony provider
+
+Implement the telephony contract under:
+
+```text
+apps/telephony/providers/
 ```
 
-### Voice Server (`voice_2_voice_server/.env`)
+Existing Vobiz and Plivo integrations provide reference implementations.
 
-```bash
-# Vobiz Telephony API
-VOBIZ_AUTH_ID=your-vobiz-auth-id
-VOBIZ_AUTH_TOKEN=your-vobiz-auth-token
-VOBIZ_API_BASE=https://api.vobiz.in/v1
-VOBIZ_CALLER_ID=+91XXXXXXXXXX
+[Add a telephony provider →](https://voicera.mintlify.app/docs/developer/guides/adding-a-telephony-provider)
 
-# Server URLs (your public domain)
-JOHNAIC_SERVER_URL=https://your-server-domain.com
-JOHNAIC_WEBSOCKET_URL=wss://your-server-domain.com
+### Run models locally
 
-# Backend API
-VOICERA_BACKEND_URL=http://localhost:8000   # Use 'http://backend:8000' in Docker
-INTERNAL_API_KEY=your-internal-api-key      # Must match backend's INTERNAL_API_KEY
+Use the optional model server to expose self-hosted STT, TTS, or LLMs through a common gateway.
 
-# MinIO Storage
-MINIO_ENDPOINT=localhost:9000               # Use 'minio:9000' in Docker
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_SECURE=false
-
-# Bhashini STT (cloud-based)
-BHASHINI_API_KEY=your-bhashini-api-key
-BHASHINI_SOCKET_URL=wss://dhruva-api.bhashini.gov.in
-
-# Local AI4Bharat Servers (optional)
-AI4BHARAT_STT_URL=http://localhost:8001
-AI4BHARAT_TTS_URL=http://localhost:8002
+```text
+Agent
+  ↓
+VoicEra
+  ↓
+Model Server
+  ├── STT
+  ├── TTS
+  └── LLM
 ```
 
-### AI4Bharat STT Server (`ai4bharat_stt_server/.env`)
+## Built for low-resource languages
 
-```bash
-# HuggingFace Token (if model is gated)
-HF_TOKEN=your-huggingface-token
+VoicEra is designed to make voice AI more accessible for **low-resource and underserved languages** — where commercial models, tooling, and high-quality training data are often limited.
 
-# Server port (default: 8001)
-PORT=8001
+It brings together open and interoperable integrations across speech and language technologies, including:
+
+* **Bhashini** — Indian-language STT and TTS
+* **AI4Bharat** — Indic speech and language models
+* **Kenpath Vistaar** — LLM support for underserved languages
+* **Cloud providers** — additional STT, TTS, and LLM options
+
+The architecture makes it possible to combine these models, self-host them, or replace them as better language technologies emerge.
+
+See the [provider registry](https://voicera.mintlify.app/docs/developer/reference/provider-registry) for the current list.
+
+## Repository
+
+```text
+VoicEra/
+├── apps/
+│   ├── api/            FastAPI control plane
+│   ├── runtime/        Pipecat real-time voice runtime
+│   ├── providers/      STT · TTS · LLM integrations
+│   └── telephony/      Telephony integrations
+├── frontend/           Next.js dashboard
+├── model-server/       Optional self-hosted model gateway
+├── scripts/             Service lifecycle scripts
+└── docs/                Mintlify documentation
 ```
 
-### AI4Bharat TTS Server (`ai4bharat_tts_server/.env`)
+## Bring your own infrastructure
 
-```bash
-# HuggingFace Token (if model is gated)
-HF_TOKEN=your-huggingface-token
+VoicEra does not provide telephony accounts or AI inference.
 
-# Server port (default: 8002)
-PORT=8002
+For a real phone deployment, you need:
+
+1. **STT, TTS, and LLM access** — cloud providers or self-hosted models.
+2. **A telephony provider** — currently Vobiz or Plivo.
+3. **Infrastructure** to run VoicEra and store your data.
+
+For browser-based testing, telephony is not required.
+
+## Documentation
+
+- [Getting started](https://voicera.mintlify.app/docs/guides)
+- [Architecture](https://voicera.mintlify.app/docs/guides/concepts/architecture)
+- [Provider registry](https://voicera.mintlify.app/docs/developer/reference/provider-registry)
+- [Environment variables](https://voicera.mintlify.app/docs/developer/reference/environment-variables)
+- [Model server](https://voicera.mintlify.app/docs/developer/model-server)
+- [Operator FAQ](https://voicera.mintlify.app/docs/guides/operator/faq)
+
+## Contributing
+
+VoicEra is built in the open.
+
+```text
+Use → Adapt → Integrate → Contribute
 ```
 
----
+Before opening a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Development Setup
-
-### Local Development (without Docker)
-
-1. **Start infrastructure with Docker:**
-   ```bash
-   make start-backend-services
-   ```
-
-2. **Start frontend locally:**
-   ```bash
-   cd voicera_frontend
-   npm install
-   npm run dev
-   ```
-
-3. **Start voice server locally:**
-   ```bash
-   cd voice_2_voice_server
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   python main.py
-   ```
-
-4. **Start AI4Bharat servers (optional, requires GPU):**
-   ```bash
-   # STT Server
-   cd ai4bharat_stt_server
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   python server.py --port 8001
-
-   # TTS Server (in another terminal)
-   cd ai4bharat_tts_server
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   python server.py
-   ```
-
-### Using the Combined Dev Command
-
-```bash
-# Start everything for development
-make start-dev
-
-# Stop everything
-make stop-dev
-```
-
----
-
-## API Endpoints
-
-### Backend API (`:8000`)
-- `GET /api/v1/agents` - List agents
-- `POST /api/v1/agents` - Create agent
-- `GET /api/v1/meetings` - List call meetings
-- `GET /api/v1/call-recordings` - List recordings
-- Swagger docs: `http://localhost:8000/docs`
-
-### Voice Server (`:7860`)
-- `GET /` - Health check
-- `GET /health` - Detailed health
-- `POST /outbound/call/` - Initiate outbound call
-- `WS /agent/{agent_id}` - WebSocket for audio streaming
-- Swagger docs: `http://localhost:7860/docs`
-
-### MinIO Console (`:9001`)
-- Web UI for managing object storage
-- Default credentials: `minioadmin` / `minioadmin`
-
----
-
-## Troubleshooting
-
-### Port Already in Use
-```bash
-make stop-all-ports
-```
-
-### Docker Network Issues
-```bash
-docker compose down -v
-docker network prune
-make start-all-services
-```
-
-### View Service Logs
-```bash
-docker compose logs -f backend
-docker compose logs -f voice_server
-docker compose logs -f frontend
-```
-
-### Reset Database
-```bash
-docker compose down -v
-# Optional: remove legacy Mongo volume after FerretDB cutover is verified
-# docker volume rm voicera_mono_repository_mongodb_data
-docker volume rm voicera_mono_repository_ferretdb_postgres_data
-make start-all-services
-```
-
----
+Security issues should be reported privately according to [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT License — Copyright (c) 2026 COSS India. See [LICENSE](LICENSE).
+VoicEra is released under the [Apache License 2.0](LICENSE).
+
+<div align="center">
+
+**Build voice infrastructure. Keep control.**
+
+</div>
