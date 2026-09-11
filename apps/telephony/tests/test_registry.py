@@ -78,3 +78,19 @@ def test_create_client_from_registered_creators() -> None:
 def test_build_config_rejects_empty_provider() -> None:
     with pytest.raises(ValueError, match="provider id is required"):
         build_config("")
+
+
+def test_neuracx_has_frame_serializer_but_no_rest_registration() -> None:
+    """NeuraCX is WS-only today — no config/client/answer-XML, deliberately.
+
+    It should never silently gain a config/client/XML registration without
+    someone consciously adding providers/neuracx/{config,service}.py (see
+    that package's __init__.py for why they're deferred). If this starts
+    failing because those files were added, update this test alongside them.
+    """
+    load_frame_serializers()
+    assert "neuracx" in FRAME_SERIALIZER_FACTORIES
+    assert "neuracx" not in TELEPHONY_CONFIGS
+    assert "neuracx" not in CLIENT_CREATORS
+    assert "neuracx" not in ANSWER_XML_BUILDERS
+    assert registered_providers() == frozenset({"vobiz", "plivo"})
