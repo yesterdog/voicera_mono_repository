@@ -7,6 +7,13 @@
 # fail or come up misconfigured (SECRET_KEY / INTERNAL_API_KEY / PROVIDER_AUTH_ENCRYPTION_KEY).
 #
 # Container names use the voicera_oss_* prefix for a stable, unique identity.
+#
+# `name:` pins the compose project to voicera_oss regardless of directory —
+# without it, this file and a legacy docker-compose.yml in the same directory
+# both default to project "voicera" and collide on service names (postgres/
+# ferretdb/minio) even though container_name differs, so `docker compose up`
+# on one can recreate (and detach volumes from) the other's containers.
+name: voicera_oss
 
 services:
   postgres:
@@ -137,7 +144,9 @@ services:
       start_period: 10s
 
   minio-init:
-    image: minio/mc:latest
+    # Docker Hub pulled minio/mc ("pull access denied, repository does not
+    # exist"); quay.io is minio's current home for this image.
+    image: quay.io/minio/mc:latest
     container_name: voicera_oss_minio_init
     depends_on:
       minio:
