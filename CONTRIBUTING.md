@@ -15,6 +15,13 @@ make application-up
 Use `make application-up` rather than a bare `docker compose up` — it generates the secrets
 the stack requires. See [`docs/guides/quickstart/install-and-run.md`](docs/guides/quickstart/install-and-run.md).
 
+`docker-compose.yaml` pins its project to `voicera_oss` via a top-level `name:` — but a
+`COMPOSE_PROJECT_NAME` env var (in your shell or root `.env`) overrides that and will make
+Compose treat this file's containers as part of whatever other project you named. If you keep
+a second, older compose file around (e.g. mid-migration), don't set `COMPOSE_PROJECT_NAME` —
+and always pass `-f docker-compose.yaml` (or `-f docker-compose.yml`) explicitly, since a bare
+`docker compose` without `-f` picks `docker-compose.yaml` first if both exist in the directory.
+
 There is no `pip install -e .`; `pyproject.toml` is a placeholder. Install per app:
 
 ```bash
