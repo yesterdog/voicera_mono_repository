@@ -17,6 +17,7 @@ from apps.runtime.services.agent_routing import (
 )
 from apps.runtime.services.backend import BackendError, backend_client
 from apps.telephony import (
+    TelephonyWebhookEvent,
     build_answer_stream_xml,
     decode_webhook_body,
     is_hangup_event,
@@ -24,8 +25,62 @@ from apps.telephony import (
     merge_webhook_payload,
     parse_webhook_form,
 )
+from apps.telephony.providers.neuracx.webhooks import normalize_status_webhook
 
 router = APIRouter()
+
+
+async def _close_call_log(
+    org_id: str,
+    agent_id: str,
+    query_call_id: str | None,
+    webhook: TelephonyWebhookEvent,
+) -> None:
+    """Patch the CallLog to completed on a hangup/terminal-status event."""
+    logger.info(
+        "Telephony hangup org_id={} agent_id={} provider_call_sid={}",
+        org_id,
+        agent_id,
+        webhook.provider_call_sid or "n/a",
+    )
+    patch: dict[str, str] = {
+        "end_time_utc": datetime.now(timezone.utc).isoformat(),
+        "status": "completed",
+    }
+    call_response = map_hangup_call_response(webhook.call_status, webhook.hangup_cause)
+    if call_response:
+        patch["call_response"] = call_response
+    try:
+        if query_call_id:
+            await backend_client.update_call(query_call_id, org_id, patch)
+        elif webhook.provider_call_sid:
+            await backend_client.update_call_by_provider_sid(
+                org_id,
+                webhook.provider_call_sid,
+                patch,
+            )
+    except BackendError as exc:
+        logger.warning(
+            "Hangup CallLog update failed org_id={} call_id={} sid={}: {}",
+            org_id,
+            query_call_id or "n/a",
+            webhook.provider_call_sid or "n/a",
+            exc,
+        )
+    else:
+        if call_response and query_call_id:
+            try:
+                await backend_client.notify_campaign_call_status(
+                    org_id,
+                    query_call_id,
+                    call_response,
+                )
+            except BackendError as exc:
+                logger.warning(
+                    "Campaign status notify failed call_id={}: {}",
+                    query_call_id,
+                    exc,
+                )
 
 
 def _websocket_url_for_agent(
@@ -61,53 +116,7 @@ async def telephony_answer(request: Request) -> Response:
     merged = merge_webhook_payload(form_dict, request.query_params)
     webhook = parse_webhook_form(merged)
     if is_hangup_event(webhook.event):
-        logger.info(
-            "Telephony hangup org_id={} agent_id={} provider_call_sid={}",
-            org_id,
-            agent_id,
-            webhook.provider_call_sid or "n/a",
-        )
-        patch: dict[str, str] = {
-            "end_time_utc": datetime.now(timezone.utc).isoformat(),
-            "status": "completed",
-        }
-        call_response = map_hangup_call_response(
-            webhook.call_status,
-            webhook.hangup_cause,
-        )
-        if call_response:
-            patch["call_response"] = call_response
-        try:
-            if query_call_id:
-                await backend_client.update_call(query_call_id, org_id, patch)
-            elif webhook.provider_call_sid:
-                await backend_client.update_call_by_provider_sid(
-                    org_id,
-                    webhook.provider_call_sid,
-                    patch,
-                )
-        except BackendError as exc:
-            logger.warning(
-                "Hangup CallLog update failed org_id={} call_id={} sid={}: {}",
-                org_id,
-                query_call_id or "n/a",
-                webhook.provider_call_sid or "n/a",
-                exc,
-            )
-        else:
-            if call_response and query_call_id:
-                try:
-                    await backend_client.notify_campaign_call_status(
-                        org_id,
-                        query_call_id,
-                        call_response,
-                    )
-                except BackendError as exc:
-                    logger.warning(
-                        "Campaign status notify failed call_id={}: {}",
-                        query_call_id,
-                        exc,
-                    )
+        await _close_call_log(org_id, agent_id, query_call_id, webhook)
         return Response(status_code=200)
 
     call_id = query_call_id
@@ -171,3 +180,39 @@ async def telephony_answer(request: Request) -> Response:
         websocket_url,
     )
     return Response(content=xml, media_type="application/xml")
+
+
+@router.post("/neuracx/status")
+async def neuracx_status(request: Request) -> Response:
+    """NeuraCX call-status pingback — always 200, log-only, never XML.
+
+    Unlike ``/answer``, this is not an answer-XML round trip: NeuraCX's own
+    WS route registers the call, and this endpoint only closes the CallLog
+    on a terminal status. ``org_id`` is injected by nginx (this box is
+    single-tenant; NeuraCX's own webhook config only knows ``agent_id``).
+    """
+    agent_id = (request.query_params.get("agent_id") or "").strip()
+    org_id = (request.query_params.get("org_id") or "").strip()
+    if not agent_id or not org_id:
+        logger.warning("NeuraCX status missing agent_id/org_id in query params")
+        return Response(status_code=200)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    normalized = normalize_status_webhook(body if isinstance(body, dict) else {})
+    webhook = parse_webhook_form(normalized)
+
+    if is_hangup_event(webhook.event):
+        # No internal call_id on this pingback (NeuraCX's status URL only
+        # carries agent_id) — resolve the CallLog by provider_call_sid.
+        await _close_call_log(org_id, agent_id, None, webhook)
+    else:
+        logger.info(
+            "NeuraCX status org_id={} agent_id={} status={}",
+            org_id,
+            agent_id,
+            webhook.event or "n/a",
+        )
+    return Response(status_code=200)
