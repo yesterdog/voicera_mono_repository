@@ -13,6 +13,7 @@ from app.services import agent_service
 from app.services.agent_telephony_service import (
     AgentTelephonyError,
     build_answer_urls,
+    delete_application,
     provision_application,
 )
 from app.services.agent_service import AgentNotFoundError
@@ -80,6 +81,28 @@ async def test_provision_application_success(
         "agent-x",
         "https://voice.example.com/answer?agent_id=x&org_id=org-1",
     )
+
+
+@pytest.mark.parametrize("provider", ["neuracx", "asterisk"])
+@pytest.mark.asyncio
+@patch("app.services.agent_telephony_service.load_telephony_client")
+async def test_provision_application_inbound_only_skips_client(
+    load_client_mock: MagicMock,
+    provider: str,
+) -> None:
+    """NeuraCX/Asterisk stream straight into our WS route — no vendor call."""
+    attachment = await provision_application("org-1", provider, "agent-x")
+    assert attachment == {"provider": provider, "inbound_only": True}
+    load_client_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.services.agent_telephony_service.load_telephony_client")
+async def test_delete_application_inbound_only_is_noop(
+    load_client_mock: MagicMock,
+) -> None:
+    await delete_application("org-1", {"provider": "neuracx", "inbound_only": True})
+    load_client_mock.assert_not_called()
 
 
 @pytest.mark.asyncio

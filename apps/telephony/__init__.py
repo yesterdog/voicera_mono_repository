@@ -38,7 +38,9 @@ from apps.telephony.providers.vobiz import VobizClient
 from apps.telephony.registry import (
     build_config,
     create_client,
+    is_inbound_only,
     load_providers,
+    register_inbound_provider,
     registered_providers,
 )
 from apps.telephony.schema import (
@@ -84,6 +86,8 @@ __all__ = [
     "create_client",
     "build_config",
     "registered_providers",
+    "register_inbound_provider",
+    "is_inbound_only",
     "load_providers",
     "provider_schemas",
     "all_provider_schemas",

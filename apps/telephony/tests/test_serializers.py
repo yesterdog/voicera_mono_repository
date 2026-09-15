@@ -11,7 +11,7 @@ import pytest
 from apps.telephony.serializers import create_frame_serializer
 
 
-@pytest.mark.parametrize("provider", ["vobiz", "plivo", "Vobiz", "Plivo", "neuracx"])
+@pytest.mark.parametrize("provider", ["vobiz", "plivo", "Vobiz", "Plivo", "neuracx", "asterisk"])
 def test_create_frame_serializer_known_providers(provider: str) -> None:
     serializer = create_frame_serializer(
         provider,
@@ -25,6 +25,20 @@ def test_create_frame_serializer_known_providers(provider: str) -> None:
         "PlivoFrameSerializer",
         "NeuraCXFrameSerializer",
     )
+
+
+def test_asterisk_serializer_disables_auto_hang_up() -> None:
+    """asterisk_bridge tears calls down itself via ARI — no Plivo account to
+    call hang() on, so unlike real "plivo" this must not require auth_id/
+    auth_token (see PlivoFrameSerializer.InputParams.auto_hang_up)."""
+    serializer = create_frame_serializer(
+        "asterisk",
+        stream_sid="stream-1",
+        call_sid="call-1",
+        sample_rate=8000,
+    )
+    assert type(serializer).__name__ == "PlivoFrameSerializer"
+    assert serializer._params.auto_hang_up is False
 
 
 def test_vobiz_16k_serializer() -> None:

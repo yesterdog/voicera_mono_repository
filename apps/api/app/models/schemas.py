@@ -399,13 +399,20 @@ class AgentUpdateRequest(BaseModel):
 
 
 class AgentTelephonyAttachment(BaseModel):
-    """Provider application attachment (null until telephony slice)."""
+    """Provider application attachment (null until telephony slice).
+
+    ``application_id``/``answer_url`` are only set for REST-capable
+    providers (Vobiz, Plivo). Inbound-only providers (NeuraCX, Asterisk)
+    have nothing to provision — the vendor's own dashboard/API or a local
+    bridge process streams straight into our WS route.
+    """
 
     provider: str
-    application_id: str
-    answer_url: str
+    application_id: Optional[str] = None
+    answer_url: Optional[str] = None
     # Optional for agents provisioned before hangup URLs were always set.
     hangup_url: Optional[str] = None
+    inbound_only: Optional[bool] = None
 
 
 class AgentResponse(BaseModel):

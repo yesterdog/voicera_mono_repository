@@ -24,6 +24,13 @@ CLIENT_CREATORS: dict[str, Callable[[Any], Any]] = {}
 ANSWER_XML_BUILDERS: dict[str, Callable[..., str]] = {}
 FRAME_SERIALIZER_FACTORIES: dict[str, Callable[..., Any]] = {}
 
+# Providers with no Application/Recording REST surface: the vendor's own
+# dashboard/API (NeuraCX) or a local bridge process (Asterisk) streams
+# straight into our WS route, so there is nothing to provision. Registered
+# from each provider's config.py (not service.py/serializer_service.py) so
+# apps/api sees them in registered_providers() without importing pipecat.
+INBOUND_ONLY_PROVIDERS: set[str] = set()
+
 _LOADED = False
 _LOADING = False
 _SERIALIZERS_LOADED = False
@@ -96,6 +103,17 @@ def register_telephony(cls: type[BaseModel]) -> type[BaseModel]:
         )
     TELEPHONY_CONFIGS[pid] = cls
     return cls
+
+
+def register_inbound_provider(provider: str) -> None:
+    """Mark ``provider`` as inbound-only: no config class, no REST client.
+
+    Call from the provider's ``config.py`` (imported by ``load_providers()``)
+    so ``registered_providers()`` includes it for apps/api's validation.
+    Register its WS frame serializer separately, from ``serializer_service.py``,
+    via ``register_frame_serializer``.
+    """
+    INBOUND_ONLY_PROVIDERS.add(_normalize_provider(provider))
 
 
 def register_client(fn: F) -> F:
@@ -220,9 +238,15 @@ def config_classes(kind: Kind | None = None) -> list[type[BaseModel]]:
 
 
 def registered_providers() -> frozenset[str]:
-    """Return the set of registered telephony provider ids."""
+    """Return the set of registered telephony provider ids (REST + inbound-only)."""
     load_providers()
-    return frozenset(TELEPHONY_CONFIGS)
+    return frozenset(TELEPHONY_CONFIGS) | frozenset(INBOUND_ONLY_PROVIDERS)
+
+
+def is_inbound_only(provider: str) -> bool:
+    """Return True when ``provider`` has no REST Application surface."""
+    load_providers()
+    return _normalize_provider(provider) in INBOUND_ONLY_PROVIDERS
 
 
 def get_client_creator(provider: str) -> Callable[[Any], Any]:
@@ -230,6 +254,8 @@ def get_client_creator(provider: str) -> Callable[[Any], Any]:
     pid = _normalize_provider(provider)
     creator = CLIENT_CREATORS.get(pid)
     if creator is None:
+        if pid in INBOUND_ONLY_PROVIDERS:
+            raise ValueError(f"{provider!r} is an inbound-only provider: no REST client")
         raise ValueError(f"Unsupported telephony provider: {provider!r}")
     return creator
 
@@ -239,6 +265,10 @@ def get_answer_xml_builder(provider: str) -> Callable[..., str]:
     pid = _normalize_provider(provider)
     builder = ANSWER_XML_BUILDERS.get(pid)
     if builder is None:
+        if pid in INBOUND_ONLY_PROVIDERS:
+            raise ValueError(
+                f"{provider!r} is an inbound-only provider: no answer-XML webhook"
+            )
         raise ValueError(f"Unsupported telephony provider for XML: {provider!r}")
     return builder
 
@@ -263,6 +293,8 @@ def build_config(provider: str, **data: Any) -> BaseModel:
     pid = _normalize_provider(provider)
     cls = TELEPHONY_CONFIGS.get(pid)
     if cls is None:
+        if pid in INBOUND_ONLY_PROVIDERS:
+            raise ValueError(f"{provider!r} is an inbound-only provider: no config class")
         raise ValueError(f"Unsupported telephony provider: {provider!r}")
     return cls(**data)
 

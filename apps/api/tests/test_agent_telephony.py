@@ -236,6 +236,54 @@ def test_telephony_create_provisions_vobiz(provision_mock: AsyncMock) -> None:
 @patch(
     "app.services.agent_service.agent_telephony_service.provision_application",
     new_callable=AsyncMock,
+    return_value={"provider": "neuracx", "inbound_only": True},
+)
+def test_telephony_create_provisions_inbound_only_provider(provision_mock: AsyncMock) -> None:
+    """telephony_provider="neuracx"/"asterisk" must clear the supported_providers()
+    gate in agent_service.py now that they're registered as inbound-only."""
+
+    async def _real_create(org_id, created_by_email, payload):
+        attachment = await provision_mock(org_id, payload.telephony_provider, "agent-x")
+        from app.services.agent_config_validation import validate_agent_config
+
+        validated = validate_agent_config(payload.config)
+        return {
+            "agent_id": "agent-1",
+            "org_id": org_id,
+            "name": payload.name,
+            "status": "active",
+            "agent_category": payload.agent_category,
+            "created_by": created_by_email,
+            "linked_phone_number": None,
+            "telephony": attachment,
+            "config": validated.model_dump(mode="python"),
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "updated_at": "2026-01-01T00:00:00+00:00",
+        }
+
+    with patch("app.routers.agents.agent_service.create_agent", side_effect=_real_create):
+        client = _make_client()
+        response = client.post(
+            "/api/v1/agents",
+            json={
+                "name": "NeuraCX Agent",
+                "agent_category": "telephony",
+                "telephony_provider": "neuracx",
+                "config": _valid_config(),
+            },
+        )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["telephony"]["provider"] == "neuracx"
+    assert body["telephony"]["inbound_only"] is True
+    assert body["telephony"]["application_id"] is None
+    assert body["telephony"]["answer_url"] is None
+    provision_mock.assert_awaited_once()
+
+
+@patch(
+    "app.services.agent_service.agent_telephony_service.provision_application",
+    new_callable=AsyncMock,
     side_effect=AgentTelephonyError("missing auth"),
 )
 def test_telephony_create_auth_failure(provision_mock: AsyncMock) -> None:

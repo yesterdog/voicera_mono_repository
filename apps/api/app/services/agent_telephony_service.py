@@ -12,7 +12,12 @@ from urllib.parse import urlencode
 
 from app.config import settings
 from app.services import auth_service
-from apps.telephony.registry import build_config, create_client, registered_providers
+from apps.telephony.registry import (
+    build_config,
+    create_client,
+    is_inbound_only,
+    registered_providers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +145,16 @@ async def provision_application(
 
     Using the stable UUID ``agent_id`` as ``app_name`` keeps names valid for
     typical Letters/Numbers/-/_ provider rules (spaces are often rejected).
+
+    Inbound-only providers (NeuraCX, Asterisk) have no Application REST
+    surface — the vendor's own dashboard/API or a local bridge process
+    streams straight into our WS route, so this returns a minimal
+    attachment without any vendor call.
     """
     provider = _require_provider(provider)
+    if is_inbound_only(provider):
+        return {"provider": provider, "inbound_only": True}
+
     answer_url, _hangup_url = build_answer_urls(org_id, agent_id)
     client = load_telephony_client(org_id, provider)
     result = await client.create_application(agent_id, answer_url)
@@ -156,7 +169,9 @@ async def provision_application(
 
 
 async def delete_application(org_id: str, attachment: dict[str, Any]) -> None:
-    """Best-effort delete of a provider application."""
+    """Best-effort delete of a provider application. No-op for inbound-only providers."""
+    if attachment.get("inbound_only"):
+        return
     provider = str(attachment.get("provider") or "").strip()
     application_id = str(attachment.get("application_id") or "").strip()
     if not provider or not application_id:
