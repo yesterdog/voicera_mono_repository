@@ -145,7 +145,7 @@ def map_hangup_call_response(call_status: str, hangup_cause: str = "") -> str | 
     status = (call_status or "").strip().lower().replace("_", "-")
     if status == "busy":
         return "busy"
-    if status in {"no-answer", "noanswer"}:
+    if status in {"no-answer", "noanswer", "expired"}:
         return "no_answer"
     if status == "failed":
         return "failed"

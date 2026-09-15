@@ -77,6 +77,7 @@ def test_map_hangup_call_response() -> None:
     assert map_hangup_call_response("cancelled", "") == "cancelled"
     assert map_hangup_call_response("completed", "NO_ANSWER") == "no_answer"
     assert map_hangup_call_response("completed", "") is None
+    assert map_hangup_call_response("expired", "") == "no_answer"
 
 
 def test_merge_webhook_payload_query_params() -> None:
