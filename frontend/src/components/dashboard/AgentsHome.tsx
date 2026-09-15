@@ -121,7 +121,18 @@ function linkStatus(raw: AgentApiResponse | undefined): { tone: LinkStatusTone; 
     const suffix = provider ? ` (${provider.toUpperCase()})` : "";
     return { tone: "ok", label: `${raw.linked_phone_number}${suffix}` };
   }
+  if (raw.telephony?.inbound_only) {
+    // The provider's own platform owns the number and streams calls to us;
+    // there is nothing to link on our side.
+    return { tone: "ok", label: `Inbound via ${inboundProviderLabel(raw.telephony.provider)}` };
+  }
   return { tone: "error", label: "Not linked" };
+}
+
+const INBOUND_PROVIDER_LABELS: Record<string, string> = { neuracx: "NeuraCX", asterisk: "Asterisk" };
+function inboundProviderLabel(provider: string | undefined): string {
+  if (!provider) return "provider";
+  return INBOUND_PROVIDER_LABELS[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
 const LINK_STATUS_STYLES: Record<LinkStatusTone, { pill: string; dot: string }> = {

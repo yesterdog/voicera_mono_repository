@@ -30,6 +30,9 @@ FRAME_SERIALIZER_FACTORIES: dict[str, Callable[..., Any]] = {}
 # from each provider's config.py (not service.py/serializer_service.py) so
 # apps/api sees them in registered_providers() without importing pipecat.
 INBOUND_ONLY_PROVIDERS: set[str] = set()
+# Picker/catalog metadata for inbound-only providers (they have no config class
+# to derive a name/description from).
+INBOUND_ONLY_INFO: dict[str, dict[str, str]] = {}
 
 _LOADED = False
 _LOADING = False
@@ -105,15 +108,33 @@ def register_telephony(cls: type[BaseModel]) -> type[BaseModel]:
     return cls
 
 
-def register_inbound_provider(provider: str) -> None:
+def register_inbound_provider(
+    provider: str,
+    *,
+    name: str | None = None,
+    description: str = "",
+) -> None:
     """Mark ``provider`` as inbound-only: no config class, no REST client.
 
     Call from the provider's ``config.py`` (imported by ``load_providers()``)
     so ``registered_providers()`` includes it for apps/api's validation.
     Register its WS frame serializer separately, from ``serializer_service.py``,
     via ``register_frame_serializer``.
+
+    ``name``/``description`` feed the provider pickers and the Integrations
+    catalog (there is no config class to derive them from).
     """
-    INBOUND_ONLY_PROVIDERS.add(_normalize_provider(provider))
+    pid = _normalize_provider(provider)
+    INBOUND_ONLY_PROVIDERS.add(pid)
+    INBOUND_ONLY_INFO[pid] = {
+        "name": name or pid.capitalize(),
+        "description": description,
+    }
+
+
+def inbound_only_info(provider: str) -> dict[str, str]:
+    """Display metadata for an inbound-only provider (empty dict if not one)."""
+    return dict(INBOUND_ONLY_INFO.get(_normalize_provider(provider), {}))
 
 
 def register_client(fn: F) -> F:

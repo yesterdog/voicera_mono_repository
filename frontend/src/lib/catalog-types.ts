@@ -28,6 +28,9 @@ export interface AuthProviderCatalog {
   fields: Record<string, CatalogField>;
   secrets?: string[];
   required?: string[];
+  /** Telephony only: no credentials are held for this provider (see ProviderSummary). */
+  inbound_only?: boolean;
+  description?: string;
 }
 
 export type AuthCatalog = Record<string, AuthProviderCatalog>;
@@ -38,6 +41,9 @@ export interface ProviderSummary {
   provider_type?: string;
   /** Whether this org can use the provider (credentials / local readiness). */
   authenticated?: boolean;
+  /** Telephony only: the provider's platform streams calls to us; nothing to configure or attach. */
+  inbound_only?: boolean;
+  description?: string;
 }
 
 export type ProviderList = Record<string, ProviderSummary>;

@@ -20,7 +20,12 @@ from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from apps.telephony.base import Kind
-from apps.telephony.registry import TELEPHONY_CONFIGS, load_providers
+from apps.telephony.registry import (
+    INBOUND_ONLY_PROVIDERS,
+    TELEPHONY_CONFIGS,
+    inbound_only_info,
+    load_providers,
+)
 
 DEFAULT_SERVICE_PROVIDERS: dict[str, str] = {
     Kind.TELEPHONY.value: "vobiz",
@@ -266,12 +271,31 @@ def _provider_summary(catalog: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_providers() -> dict[str, dict[str, Any]]:
-    """Picker summaries for every telephony provider."""
+def _inbound_only_summary(provider: str) -> dict[str, Any]:
+    info = inbound_only_info(provider)
     return {
+        "provider": provider,
+        "name": info.get("name") or provider,
+        "description": info.get("description", ""),
+        "inbound_only": True,
+    }
+
+
+def list_providers() -> dict[str, dict[str, Any]]:
+    """Picker summaries for every telephony provider.
+
+    Inbound-only providers (no config class, no REST client) are included with
+    ``inbound_only: True`` so agents can select them; they have no settings or
+    auth forms.
+    """
+    load_providers()
+    out = {
         provider: _provider_summary(catalog)
         for provider, catalog in provider_schemas(Kind.TELEPHONY).items()
     }
+    for provider in sorted(INBOUND_ONLY_PROVIDERS):
+        out[provider] = _inbound_only_summary(provider)
+    return out
 
 
 def provider_settings(provider: str) -> dict[str, Any]:
@@ -324,12 +348,27 @@ def provider_level_auth(provider: str) -> dict[str, Any] | None:
 
 
 def all_provider_level_auth() -> dict[str, dict[str, Any]]:
-    """Provider-level auth catalogs for every telephony provider."""
-    return {
+    """Provider-level auth catalogs for every telephony provider.
+
+    Inbound-only providers appear with an empty field set and
+    ``inbound_only: True`` so the Integrations page can list them as
+    "nothing to connect" rather than omitting them.
+    """
+    out = {
         provider: auth
         for provider in provider_schemas(Kind.TELEPHONY)
         if (auth := provider_level_auth(provider)) is not None
     }
+    load_providers()
+    for provider in sorted(INBOUND_ONLY_PROVIDERS):
+        out[provider] = {
+            **_inbound_only_summary(provider),
+            "fields": {},
+            "required": [],
+            "secrets": [],
+            "kinds": [Kind.TELEPHONY.value],
+        }
+    return out
 
 
 __all__ = [

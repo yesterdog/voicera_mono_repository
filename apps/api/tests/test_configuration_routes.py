@@ -112,6 +112,10 @@ def test_llm_and_telephony_authenticated_flag():
     assert telephony.json()["plivo"]["authenticated"] is True
     assert openai_settings.json()["authenticated"] is True
     assert plivo_settings.json()["authenticated"] is True
+    # Inbound-only providers hold no credentials: listed, and always authenticated.
+    assert telephony.json()["neuracx"]["inbound_only"] is True
+    assert telephony.json()["neuracx"]["authenticated"] is True
+    assert telephony.json()["vobiz"]["authenticated"] is False
 
 
 def test_local_authenticated_from_model_server_probe():

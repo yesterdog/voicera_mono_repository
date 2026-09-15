@@ -10,4 +10,11 @@ from __future__ import annotations
 
 from apps.telephony.registry import register_inbound_provider
 
-register_inbound_provider("neuracx")
+register_inbound_provider(
+    "neuracx",
+    name="NeuraCX",
+    description=(
+        "Inbound-only. NeuraCX's platform owns the number and streams the call "
+        "to this deployment's WebSocket URL; no credentials are stored here."
+    ),
+)

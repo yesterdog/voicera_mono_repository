@@ -38,7 +38,10 @@ def _with_authenticated_list(
     return {
         provider: {
             **entry,
-            "authenticated": is_authenticated(provider, configured),
+            # Inbound-only telephony providers hold no credentials, so there is
+            # nothing to authenticate — they are always selectable.
+            "authenticated": bool(entry.get("inbound_only"))
+            or is_authenticated(provider, configured),
         }
         for provider, entry in listed.items()
     }

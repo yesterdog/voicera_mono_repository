@@ -102,10 +102,29 @@ def test_list_providers_summary():
     from apps.telephony.schema import list_providers
 
     listed = list_providers()
-    assert set(listed) == {"vobiz", "plivo"}
+    assert set(listed) == {"vobiz", "plivo", "neuracx", "asterisk"}
     assert listed["vobiz"] == {"provider": "vobiz", "name": "Vobiz"}
     assert "secrets" not in listed["vobiz"]
     assert "fields" not in listed["vobiz"]
+    # Inbound-only providers are selectable for agents but carry no forms.
+    assert listed["neuracx"]["name"] == "NeuraCX"
+    assert listed["neuracx"]["inbound_only"] is True
+    assert listed["asterisk"]["inbound_only"] is True
+    assert "inbound_only" not in listed["vobiz"]
+
+
+def test_all_provider_level_auth_lists_inbound_only_with_no_fields():
+    from apps.telephony.schema import all_provider_level_auth
+
+    auth = all_provider_level_auth()
+    assert set(auth) == {"vobiz", "plivo", "neuracx", "asterisk"}
+    assert auth["neuracx"]["inbound_only"] is True
+    assert auth["neuracx"]["fields"] == {}
+    assert auth["neuracx"]["required"] == []
+    assert auth["neuracx"]["secrets"] == []
+    assert auth["neuracx"]["kinds"] == ["telephony"]
+    assert auth["neuracx"]["name"] == "NeuraCX"
+    assert "inbound_only" not in auth["vobiz"]
 
 
 def test_telephony_settings_and_auth_split():

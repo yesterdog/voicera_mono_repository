@@ -61,9 +61,11 @@ export interface AgentApiResponse {
   linked_phone_number: string | null;
   telephony: {
     provider: string;
-    application_id: string;
-    answer_url: string;
+    /** null for inbound-only providers (nothing is provisioned on the vendor side). */
+    application_id: string | null;
+    answer_url: string | null;
     hangup_url?: string | null;
+    inbound_only?: boolean;
   } | null;
   config: {
     schema_version: number;

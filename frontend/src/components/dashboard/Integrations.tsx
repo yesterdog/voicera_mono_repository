@@ -548,7 +548,8 @@ export function Integrations({
                 <div className="divide-y divide-v-line">
                   {filteredTelephonyList.map((entry) => {
                     const name = entry.catalog.name ?? entry.providerId;
-                    const connected = configured.includes(entry.providerId);
+                    const inboundOnly = Boolean(entry.catalog.inbound_only);
+                    const connected = inboundOnly || configured.includes(entry.providerId);
                     return (
                       <div
                         key={entry.providerId}
@@ -565,14 +566,25 @@ export function Integrations({
                                 Telephony
                               </span>
                               <ProviderTypeBadge providerType={entry.catalog.provider_type} />
+                              {inboundOnly ? (
+                                <span className="rounded-full border border-v-line bg-v-soft px-1.5 py-0.5 text-[10px] font-medium text-v-muted-2">
+                                  Inbound only
+                                </span>
+                              ) : null}
                               {connected ? (
                                 <span className="flex size-5 items-center justify-center rounded-full bg-emerald-500/10">
                                   <Check className="size-3 text-emerald-600" strokeWidth={2} />
                                 </span>
                               ) : null}
                             </div>
+                            {inboundOnly && entry.catalog.description ? (
+                              <p className="mt-0.5 text-xs text-v-muted">{entry.catalog.description}</p>
+                            ) : null}
                           </div>
                         </div>
+                        {inboundOnly ? (
+                          <span className="shrink-0 text-xs text-v-muted">No credentials needed</span>
+                        ) : (
                         <Button variant="ghost" size="sm" onClick={() => setSelected(entry)}>
                           {connected ? (
                             <>
@@ -586,6 +598,7 @@ export function Integrations({
                             </>
                           )}
                         </Button>
+                        )}
                       </div>
                     );
                   })}

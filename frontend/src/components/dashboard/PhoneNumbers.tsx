@@ -94,7 +94,11 @@ function AddNumberDialog({
   onImport: (phoneNumber: string, provider: string) => Promise<boolean>;
   onClose: () => void;
 }) {
-  const providerOptions = useMemo(() => Object.values(providers), [providers]);
+  // Inbound-only providers (NeuraCX, Asterisk) own their numbers upstream; there is no inventory to import.
+  const providerOptions = useMemo(
+    () => Object.values(providers).filter((p) => !p.inbound_only),
+    [providers],
+  );
   const [provider, setProvider] = useState(providerOptions[0]?.provider ?? "");
   const [inventory, setInventory] = useState<string[]>([]);
   const [invLoading, setInvLoading] = useState(false);
