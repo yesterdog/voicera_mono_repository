@@ -47,7 +47,25 @@ async def agent_websocket(websocket: WebSocket, org_id: str, agent_id: str) -> N
             (agent.get("telephony") or {}).get("provider"),
         )
 
-        if category == "websocket":
+        # A browser "Test on Browser" session may drive a telephony agent: the
+        # client tags itself (?client=browser) or presents a registered web
+        # call, and gets the browser serializer instead of the provider's.
+        browser_client = (
+            (websocket.query_params.get("client") or "").strip().lower() == "browser"
+        )
+        if category != "websocket" and not browser_client and call_id:
+            try:
+                probe = await backend_client.get_call(call_id, org_id)
+                browser_client = str(probe.get("call_type") or "") == "web"
+            except BackendError:
+                browser_client = False
+        if browser_client and category != "websocket":
+            logger.info(
+                "Browser test session for {} agent — using the websocket pipeline",
+                category,
+            )
+
+        if category == "websocket" or browser_client:
             call_log: dict[str, Any] | None = None
             if call_id:
                 try:

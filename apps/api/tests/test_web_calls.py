@@ -177,19 +177,22 @@ def test_register_web_call_happy_path(
 
 @_patch_db("app.services.call_log_service.get_database")
 @_patch_db("app.services.agent_service.get_database")
-def test_register_web_call_rejects_telephony_agent(
+def test_register_web_call_accepts_telephony_agent_for_browser_test(
     _agents_db: MagicMock,
     _calls_db: MagicMock,
 ) -> None:
+    """"Test on Browser" drives a telephony agent from a browser session."""
     _AGENT_STORE[("org-1", "agent-tel-1")] = _telephony_agent()
     client = _make_client()
     response = client.post(
         "/api/v1/calls/web",
         json={"agent_id": "agent-tel-1"},
     )
-    assert response.status_code == 422
-    assert "websocket" in response.json()["detail"].lower()
-    assert len(_CALL_STORE) == 0
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["agent_id"] == "agent-tel-1"
+    assert body["call_type"] == "web"
+    assert len(_CALL_STORE) == 1
 
 
 @_patch_db("app.services.call_log_service.get_database")

@@ -26,11 +26,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _require_websocket_agent(agent: dict[str, Any]) -> None:
+def _require_browser_testable_agent(agent: dict[str, Any]) -> None:
+    """A browser session can drive any agent: websocket agents natively, and
+    telephony agents as a "Test on Browser" run (the runtime swaps the
+    provider serializer for the browser one when the client says so)."""
     category = str(agent.get("agent_category") or "").strip().lower()
-    if category != "websocket":
+    if category not in {"websocket", "telephony"}:
         raise WebCallError(
-            "agent_id must reference a websocket agent",
+            f"agent_id must reference a websocket or telephony agent (got {category!r})",
             status_code=422,
         )
 
@@ -47,7 +50,7 @@ def register_web_call(
     except AgentNotFoundError as exc:
         raise WebCallError(str(exc), status_code=404) from exc
 
-    _require_websocket_agent(agent)
+    _require_browser_testable_agent(agent)
 
     variables = dict(custom_variables or {})
     call_id = str(uuid.uuid4())

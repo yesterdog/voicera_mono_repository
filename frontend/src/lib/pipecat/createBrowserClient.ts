@@ -12,7 +12,11 @@ export const BROWSER_SAMPLE_RATE = 16000;
 export function getBrowserWsUrl(orgId: string, agentId: string, callId?: string): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const path = `${protocol}//${window.location.host}/agent/${orgId}/${agentId}`;
-  return callId ? `${path}?call_id=${encodeURIComponent(callId)}` : path;
+  // `client=browser` lets the runtime run a telephony agent with the browser
+  // pipeline ("Test on Browser") instead of waiting for the provider's preamble.
+  const params = new URLSearchParams({ client: "browser" });
+  if (callId) params.set("call_id", callId);
+  return `${path}?${params.toString()}`;
 }
 
 /** Pipecat client for browser test calls (protobuf WebSocket, no Daily/WebRTC transport). */

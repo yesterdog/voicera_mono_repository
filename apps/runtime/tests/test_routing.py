@@ -222,3 +222,64 @@ def test_vobiz_agent_still_rejects_non_start_first_frame(
         websocket.close()
 
     run_telephony_bot_mock.assert_not_awaited()
+
+
+@patch("apps.runtime.routes.agent.run_telephony_bot", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.run_websocket_bot", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.create_web_call", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.get_call", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.get_agent", new_callable=AsyncMock)
+def test_browser_client_drives_telephony_agent_with_websocket_pipeline(
+    get_agent_mock: AsyncMock,
+    get_call_mock: AsyncMock,
+    create_web_call_mock: AsyncMock,
+    run_websocket_bot_mock: AsyncMock,
+    run_telephony_bot_mock: AsyncMock,
+    client: TestClient,
+) -> None:
+    """"Test on Browser" on a NeuraCX/Asterisk agent must not wait for the
+    provider's text preamble (a browser sends binary audio) — it takes the
+    websocket path with the registered web call."""
+    get_agent_mock.return_value = _telephony_agent(provider="neuracx")
+    get_call_mock.return_value = {
+        "call_id": "call-web-tel",
+        "call_type": "web",
+        "agent_id": "agent-2",
+        "custom_variables": {},
+    }
+
+    with client.websocket_connect(
+        "/agent/org-1/agent-2?call_id=call-web-tel&client=browser"
+    ) as websocket:
+        websocket.close()
+
+    run_telephony_bot_mock.assert_not_awaited()
+    run_websocket_bot_mock.assert_awaited_once()
+    _, kwargs = run_websocket_bot_mock.await_args
+    assert kwargs["call_id"] == "call-web-tel"
+    create_web_call_mock.assert_not_awaited()
+
+
+@patch("apps.runtime.routes.agent.run_telephony_bot", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.run_websocket_bot", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.get_call", new_callable=AsyncMock)
+@patch("apps.runtime.routes.agent.backend_client.get_agent", new_callable=AsyncMock)
+def test_registered_web_call_alone_selects_browser_path_for_telephony_agent(
+    get_agent_mock: AsyncMock,
+    get_call_mock: AsyncMock,
+    run_websocket_bot_mock: AsyncMock,
+    run_telephony_bot_mock: AsyncMock,
+    client: TestClient,
+) -> None:
+    get_agent_mock.return_value = _telephony_agent(provider="asterisk")
+    get_call_mock.return_value = {
+        "call_id": "call-web-tel-2",
+        "call_type": "web",
+        "agent_id": "agent-2",
+    }
+
+    with client.websocket_connect("/agent/org-1/agent-2?call_id=call-web-tel-2") as websocket:
+        websocket.close()
+
+    run_telephony_bot_mock.assert_not_awaited()
+    run_websocket_bot_mock.assert_awaited_once()
