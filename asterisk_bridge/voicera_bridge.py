@@ -67,6 +67,11 @@ RTP_PORT_RANGE_END = int(
 # Voicera voice_2_voice_server side
 VOICERA_WS_URL = os.environ.get("VOICERA_WS_URL", "ws://127.0.0.1:7860")
 VOICERA_AGENT_ID = os.environ.get("VOICERA_AGENT_ID")
+# Legacy voice_2_voice_server path by default, unchanged for the live bridge.
+# Override to target apps/runtime's /agent/{org_id}/{agent_id} route instead —
+# either a template ("/agent/<org_id>/{agent_id}") or a fully resolved path
+# (the {agent_id} placeholder is optional; .format() no-ops without it).
+VOICERA_WS_PATH = os.environ.get("VOICERA_WS_PATH", "/asterisk/agent/{agent_id}")
 
 # Must match RTPServer.SAMPLES_PER_PACKET (rtp_server.py) — that's the
 # frame size its RTP timestamp bookkeeping implicitly assumes per send.
@@ -114,6 +119,7 @@ class VoiceraBridge:
             "Voicera bridge started",
             app=ASTERISK_APP_NAME,
             voicera_ws_url=VOICERA_WS_URL,
+            voicera_ws_path=VOICERA_WS_PATH,
             agent_id=VOICERA_AGENT_ID,
         )
 
@@ -191,7 +197,7 @@ class VoiceraBridge:
                 await self._cleanup_call(channel_id)
                 return
 
-            ws_url = f"{VOICERA_WS_URL}/asterisk/agent/{VOICERA_AGENT_ID}"
+            ws_url = f"{VOICERA_WS_URL}{VOICERA_WS_PATH.format(agent_id=VOICERA_AGENT_ID)}"
             ws = await websockets.connect(ws_url)
             await ws.send(
                 json.dumps(
