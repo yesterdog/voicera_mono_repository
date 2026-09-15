@@ -2,6 +2,8 @@ SHELL := /bin/bash
 
 COMPOSE  := docker compose
 APP_FILE := docker-compose.yaml
+# Optional box-local overlay (gitignored) — see docker-compose.local.example.yaml.
+APP_FILES := -f $(APP_FILE) $(if $(wildcard docker-compose.local.yaml),-f docker-compose.local.yaml)
 MS_DIR   := model-server
 
 # Extra arguments for a single invocation, e.g. `make up ARGS=--no-build`.
@@ -31,10 +33,10 @@ application-down:  ## Stop the application stack (keeps volumes)
 restart: application-down application-up  ## Stop then start the application stack
 
 application-logs:  ## Follow application logs (SERVICE=api to narrow)
-	$(COMPOSE) -f $(APP_FILE) logs -f $(SERVICE)
+	$(COMPOSE) $(APP_FILES) logs -f $(SERVICE)
 
 application-ps:  ## Show application containers
-	$(COMPOSE) -f $(APP_FILE) ps
+	$(COMPOSE) $(APP_FILES) ps
 
 # --------------------------------------------------------------- model-server
 

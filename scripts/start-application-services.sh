@@ -75,6 +75,13 @@ set_dotenv_value() {
 
 [[ -f docker-compose.yaml ]] || fail "docker-compose.yaml not found at repo root. Re-run from the Voicera checkout."
 
+# Optional box-local overlay (gitignored) — see docker-compose.local.example.yaml.
+compose_files=(-f docker-compose.yaml)
+if [[ -f docker-compose.local.yaml ]]; then
+    compose_files+=(-f docker-compose.local.yaml)
+fi
+compose_files_str="${compose_files[*]}"
+
 if [[ ! -f "$ENV_FILE" ]]; then
     if [[ -f .env.example ]]; then
         cp .env.example "$ENV_FILE"
@@ -118,7 +125,7 @@ fi
 
 echo ""
 echo "This will run:"
-echo "  docker compose -f docker-compose.yaml up --build -d"
+echo "  docker compose ${compose_files_str} up --build -d"
 echo ""
 api_port="$(dotenv_value API_HOST_PORT || true)"
 api_port="${api_port:-8000}"
@@ -156,10 +163,10 @@ fi
 
 # Detached by default so the script returns after containers are up.
 # Pass extra compose args after -- if needed, e.g. ./scripts/start_docker.sh -- --no-build
-docker compose -f docker-compose.yaml up --build -d "$@"
+docker compose "${compose_files[@]}" up --build -d "$@"
 
 echo ""
 echo "Voicera is starting in the background."
-echo "  Status:  docker compose -f docker-compose.yaml ps"
-echo "  Logs:    docker compose -f docker-compose.yaml logs -f api runtime frontend"
+echo "  Status:  docker compose ${compose_files_str} ps"
+echo "  Logs:    docker compose ${compose_files_str} logs -f api runtime frontend"
 echo "  Stop:    ./scripts/stop-application-services.sh"

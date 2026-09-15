@@ -46,3 +46,6 @@ Claude outputs/
 # Generated protobuf stubs. Built at image build time and in the test fixture,
 # never committed: generated code checked in beside a .proto drifts from it and
 # nothing notices.
+
+# Box-local compose overlay (see docker-compose.local.example.yaml)
+docker-compose.local.yaml

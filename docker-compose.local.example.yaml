@@ -1,0 +1,18 @@
+# Optional box-local overlay. Copy to docker-compose.local.yaml (gitignored) to
+# add deployment-specific settings on top of docker-compose.yaml without
+# editing the shared file. It is picked up automatically by
+# scripts/start-application-services.sh, scripts/stop-application-services.sh
+# and the Makefile whenever it exists.
+#
+# Example: attach the runtime to pre-existing Docker networks so a reverse
+# proxy or a telephony bridge running elsewhere on the host can reach it by
+# container name.
+services:
+  runtime:
+    networks:
+      - app-network
+      - my_proxy_network
+
+networks:
+  my_proxy_network:
+    external: true
