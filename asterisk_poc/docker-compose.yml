@@ -58,9 +58,11 @@ services:
       - ./bridge.env
     depends_on:
       - asterisk
+    # Single network on purpose: a bridge attached to two Docker networks was
+    # observed sending RTP that Asterisk never received. The voice runtime is
+    # attached to voicera_poc_net instead (docker-compose.local.yaml).
     networks:
       - voicera_poc_net
-      - voicera_network
 
 volumes:
   asterisk_logs:
