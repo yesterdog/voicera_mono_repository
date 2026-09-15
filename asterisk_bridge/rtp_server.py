@@ -217,6 +217,46 @@ class RTPServer:
     def get_call_id_for_ssrc(self, ssrc: int) -> Optional[str]:
         return self.ssrc_to_call_id.get(ssrc)
 
+    def set_remote_endpoint(self, call_id: str, host: str, port: int) -> bool:
+        """Pre-set where to send RTP for ``call_id`` before any packet arrives.
+
+        Asterisk's externalMedia response carries UNICASTRTP_LOCAL_ADDRESS/PORT,
+        the exact socket it will send from and listen on. Without this the
+        session only learns the remote endpoint from the first inbound packet,
+        and everything the provider streams before then (typically the first
+        ~1s of the greeting) is dropped by send_audio() as "remote endpoint
+        unknown". First-packet learning remains the fallback; a later packet
+        from a different source is still handled by the lock/allow-list logic.
+        """
+        session = self.sessions.get(call_id)
+        if not session:
+            logger.debug("RTP preset skipped (no session)", call_id=call_id)
+            return False
+        if self.allowed_remote_hosts is not None and host not in self.allowed_remote_hosts:
+            logger.warning(
+                "RTP preset rejected (host not allowed)",
+                call_id=call_id,
+                remote_host=host,
+                remote_port=port,
+            )
+            return False
+        if session.remote_host is not None:
+            logger.debug(
+                "RTP preset skipped (endpoint already known)",
+                call_id=call_id,
+                remote_host=session.remote_host,
+                remote_port=session.remote_port,
+            )
+            return False
+        session.remote_host, session.remote_port = host, int(port)
+        logger.info(
+            "RTP remote endpoint preset from externalMedia",
+            call_id=call_id,
+            remote_host=session.remote_host,
+            remote_port=session.remote_port,
+        )
+        return True
+
     async def send_audio(self, call_id: str, chunk: bytes, *, ssrc: Optional[int] = None) -> bool:
         """Send provider audio back to Asterisk as RTP for the specified call."""
         if not chunk:

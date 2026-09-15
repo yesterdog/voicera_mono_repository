@@ -172,6 +172,20 @@ class VoiceraBridge:
             # as a separately scheduled task) is recognized and skipped.
             self._known_channel_ids.add(external_channel_id)
 
+            # Asterisk tells us up front which socket the externalMedia leg
+            # sends from / listens on. Preset it so the greeting is not
+            # dropped while we wait for the first inbound RTP packet.
+            chanvars = external_channel.get("channelvars") or {}
+            em_host = chanvars.get("UNICASTRTP_LOCAL_ADDRESS")
+            em_port = chanvars.get("UNICASTRTP_LOCAL_PORT")
+            if em_host and em_port:
+                self.rtp.set_remote_endpoint(channel_id, str(em_host), int(em_port))
+            else:
+                logger.info(
+                    "externalMedia response has no UNICASTRTP vars; learning endpoint from first packet",
+                    channel_id=channel_id,
+                )
+
             # "proxy_media" forces Asterisk to relay actual RTP through its own
             # core for this bridge instead of optimizing 2-party bridges into a
             # native/direct-media passthrough, which would try to point the
